@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ChemChecker Pro</title>
+    <title>ChemChecker Pro - Compliance Tool</title>
     
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -16,6 +16,7 @@
             body { background-color: white; }
             #root { margin: 0; padding: 0; }
             td, th { color: black !important; border: 1px solid #ddd !important; }
+            .card { break-inside: avoid; border: 1px solid #ccc; }
         }
     </style>
 </head>
@@ -28,68 +29,113 @@
         import { 
             Search, AlertTriangle, CheckCircle, Ban, Users, Activity, Info, 
             ShieldCheck, Eraser, FileDown, Upload, Trash2, BookOpen, X,
-            ClipboardCheck, FileText, ArrowRight, AlertOctagon, Database, Table, HardDrive, Loader2, Scale
+            ClipboardCheck, FileText, ArrowRight, AlertOctagon, Database, Table, HardDrive, Loader2
         } from 'https://esm.sh/lucide-react@0.263.1';
 
-        // --- INTERNE VERSIE CONTROLE ---
-        const INTERNAL_VERSION = "5.1 - Limits Integrated"; 
-        
         // --- 1. DATABASE SETUP ---
         const db = new Dexie("ChemCheckerDB");
         db.version(2).stores({
             settings: 'id, value',
-            substances: '++id, cas, name, listId' // Limit wordt opgeslagen in object, hoeft niet geïndexeerd te zijn
+            substances: '++id, cas, name, listId'
         });
 
-        // --- 2. REGULATORY KNOWLEDGE BASE ---
+        // --- 2. UPDATED REGULATORY KNOWLEDGE BASE ---
+        // Includes REACH, Precursors (Explosives/Drugs), and Environment (ODS/F-Gas)
         const regulatoryInfo = {
+            // --- A. CHEMICAL SAFETY (REACH & CLP) ---
             "annex xvii": { 
-                category: "prohibited", 
+                category: "prohibited", // Red
                 title: "REACH Annex XVII (Restrictions)", 
-                description: "Restricts the manufacture, placing on the market, or use.", 
-                implication: "Check limit value carefully. Usually 0.1% or banned for specific uses.", 
-                paperwork: "Statement of Compliance (SoC).", 
+                description: "Substances with specific restrictions or bans on certain uses (e.g., toys, jewelry, consumer mixtures).", 
+                implication: "STOP & CHECK: Verify 'Conditions of Restriction'. Import is PROHIBITED if use falls under restriction.", 
+                paperwork: "Statement of Compliance / Proof of Exempt Use.", 
                 riskColor: "text-red-700 bg-red-50 border-red-200" 
             },
-            "pop": { 
-                category: "prohibited", 
-                title: "POPs Regulation (EU 2019/1021)", 
-                description: "Persistent Organic Pollutants. Strict prohibition.", 
-                implication: "BANNED: Often Trace Contaminant limit (UTC) applies (e.g. 10mg/kg).", 
-                paperwork: "Supplier Declaration of Absence.", 
+            "annex xiv": { 
+                category: "prohibited", // Red
+                title: "REACH Annex XIV (Authorisation List)", 
+                description: "Substances of Very High Concern (SVHC). Cannot be used after 'Sunset Date' without official Authorisation.", 
+                implication: "PROHIBITED: Do not import without a valid Authorisation Number from the EC.", 
+                paperwork: "Authorisation Number OR Proof of Exemption.", 
                 riskColor: "text-red-900 bg-red-100 border-red-300" 
             },
-            "annex xiv": { 
-                category: "warning", 
-                title: "REACH Annex XIV (Authorisation List)", 
-                description: "Use banned after 'Sunset Date' without Authorisation.", 
-                implication: "USE BAN: Cannot use without Authorisation number.", 
-                paperwork: "Proof of Authorisation OR Article 33 Declaration.", 
-                riskColor: "text-orange-700 bg-orange-50 border-orange-200" 
-            },
-            "annex vi": { 
-                category: "warning", 
-                title: "CLP Annex VI (Harmonised Classification)", 
-                description: "Legally binding classification (CMR).", 
-                implication: "Ensure SDS and Labels match.", 
-                paperwork: "Up-to-date Safety Data Sheet (SDS).", 
-                riskColor: "text-orange-700 bg-orange-50 border-orange-200" 
-            },
             "svhc": { 
-                category: "watch", 
+                category: "watch", // Yellow
                 title: "SVHC Candidate List (Art. 59)", 
-                description: "Candidate substances for Annex XIV.", 
-                implication: "Threshold >0.1% w/w triggers Article 33 & SCIP.", 
-                paperwork: "Article 33 Declaration & SCIP Number.", 
+                description: "Candidate substances for Annex XIV. Triggers immediate communication duties.", 
+                implication: "INFO DUTY: If >0.1% (w/w), must inform customer (Art. 33) and notify ECHA SCIP database.", 
+                paperwork: "Article 33 Declaration & SCIP Notification Number.", 
                 riskColor: "text-yellow-700 bg-yellow-50 border-yellow-200" 
             },
-            "pic": { 
-                category: "warning", 
-                title: "PIC Regulation", 
-                description: "Prior Informed Consent for export/import.", 
-                implication: "Export requires notification and RIN.", 
-                paperwork: "Export Notification Number (RIN).", 
-                riskColor: "text-purple-700 bg-purple-50 border-purple-200" 
+            "annex vi": { 
+                category: "warning", // Orange
+                title: "CLP Annex VI (Harmonised Classification)", 
+                description: "Substances with legally binding classification and labeling rules (often CMRs).", 
+                implication: "COMPLIANCE: SDS and Labels must match harmonised standards exactly.", 
+                paperwork: "Strictly compliant Safety Data Sheet (SDS).", 
+                riskColor: "text-orange-700 bg-orange-50 border-orange-200" 
+            },
+
+            // --- B. SECURITY (PRECURSORS) ---
+            "explosives restricted": { 
+                category: "prohibited", // Red
+                title: "Explosives Precursors (Annex I - Restricted)", 
+                description: "High-risk substances (e.g., high conc. Nitric Acid). Sales to general public BANNED.", 
+                implication: "STRICT CHECK: Professional users only. Verify ID and intended use.", 
+                paperwork: "Customer Declaration (Specific Use) & Copy of ID.", 
+                riskColor: "text-red-700 bg-red-50 border-red-200" 
+            },
+            "explosives reportable": { 
+                category: "watch", // Yellow
+                title: "Explosives Precursors (Annex II - Reportable)", 
+                description: "Lower risk substances (e.g., Acetone). No sales ban, but monitoring required.", 
+                implication: "MONITOR: Report suspicious transactions (unusual quantity/behavior) to authorities.", 
+                paperwork: "Internal reporting log if suspicious.", 
+                riskColor: "text-yellow-700 bg-yellow-50 border-yellow-200" 
+            },
+            "drug cat1": { 
+                category: "prohibited", // Red
+                title: "Drug Precursors (Category 1)", 
+                description: "Substances used in illicit drug manufacture (e.g., Ephedrine). Strictest control.", 
+                implication: "STOP: Requires License (Importer & Customer) AND Import Authorization.", 
+                paperwork: "Valid License & Import Permit.", 
+                riskColor: "text-red-900 bg-red-100 border-red-300" 
+            },
+            "drug cat23": { 
+                category: "warning", // Orange
+                title: "Drug Precursors (Category 2 & 3)", 
+                description: "Industrial chemicals (e.g., Toluene, MEK) used in drug production.", 
+                implication: "CHECK USE: Legitimate business use only. Customer must sign declaration.", 
+                paperwork: "End-User Declaration (EUD).", 
+                riskColor: "text-orange-700 bg-orange-50 border-orange-200" 
+            },
+
+            // --- C. ENVIRONMENT (ODS & F-GASES) ---
+            "ods": { 
+                category: "prohibited", // Red
+                title: "Ozone Depleting Substances (ODS)", 
+                description: "Substances that damage the ozone layer (CFCs, Halons). Regulation 1005/2009.", 
+                implication: "PROHIBITED: Generally banned unless for exempted lab use (Requires License + Quota).", 
+                paperwork: "EC ODS License & Quota confirmation.", 
+                riskColor: "text-red-900 bg-red-100 border-red-300" 
+            },
+            "fgas": { 
+                category: "warning", // Orange
+                title: "F-Gases (HFCs)", 
+                description: "Fluorinated greenhouse gases. Regulation 517/2014.", 
+                implication: "QUOTA CHECK: Importer must be registered in HFC Registry and hold sufficient Quota.", 
+                paperwork: "HFC Registry Registration & Quota Deduction.", 
+                riskColor: "text-orange-700 bg-orange-50 border-orange-200" 
+            },
+
+            // --- D. OTHER ---
+            "pop": { 
+                category: "prohibited", 
+                title: "POPs Regulation", 
+                description: "Persistent Organic Pollutants. Strict prohibition.", 
+                implication: "STRICT PROHIBITION: Cannot be recycled or used.", 
+                paperwork: "Declaration of Absence.", 
+                riskColor: "text-red-900 bg-red-100 border-red-300" 
             },
             "annex iv": { 
                 category: "low", 
@@ -111,11 +157,13 @@
             const [loadingMessage, setLoadingMessage] = useState("");
             const [activeGuideCategory, setActiveGuideCategory] = useState(null);
 
+            // --- INITIALIZATION ---
             useEffect(() => {
                 const initDB = async () => {
                     try {
                         const dateRecord = await db.settings.get("uploadDate");
                         const count = await db.substances.count();
+                        
                         if (count > 0) {
                             setDbLoaded(true);
                             setRecordCount(count);
@@ -127,7 +175,7 @@
                 initDB();
             }, []);
 
-            // --- 3. UPDATED DATA NORMALIZATION (WITH LIMITS) ---
+            // --- DATA NORMALIZATION ---
             const normalizeData = (rawData) => {
                 let arr = rawData;
                 if (!Array.isArray(arr) && arr?.data) arr = arr.data;
@@ -136,16 +184,12 @@
 
                 return arr.map(item => {
                     const keys = Object.keys(item);
-                    
-                    // Regex patterns
+                    // Smart detection of column names
                     const casKey = keys.find(k => /cas/i.test(k) && !/name/i.test(k)); 
                     const listKey = keys.find(k => /list|reg/i.test(k));
                     const nameKey = keys.find(k => /name|substance/i.test(k) && !/list/i.test(k));
                     const ecKey = keys.find(k => /ec/i.test(k));
                     const noteKey = keys.find(k => /note|desc/i.test(k));
-                    
-                    // NIEUW: Zoek naar limit/threshold kolommen
-                    const limitKey = keys.find(k => /limit|thresh|waarde|val|conc|condition/i.test(k) && !/list|name|cas/i.test(k));
 
                     const rawCas = item[casKey] || item["CAS No"] || item["CAS Number"] || "";
                     
@@ -155,8 +199,7 @@
                         listId: item[listKey] || item["List Name"] || "Unknown List",
                         name: item[nameKey] || item["Substance Name"] || "Unknown Name",
                         ec: item[ecKey] || "",
-                        note: item[noteKey] || "",
-                        limit: limitKey ? item[limitKey] : "" // Opslaan van de limit
+                        note: item[noteKey] || ""
                     };
                 });
             };
@@ -164,6 +207,7 @@
             const handleFileUpload = (event) => {
                 const file = event.target.files[0];
                 if (!file) return;
+                
                 setIsLoading(true);
                 setLoadingMessage("Reading file...");
 
@@ -172,13 +216,16 @@
                     try {
                         setLoadingMessage("Parsing JSON...");
                         const json = JSON.parse(e.target.result);
-                        setLoadingMessage("Normalizing data (looking for Limits)...");
+                        
+                        setLoadingMessage("Normalizing data...");
                         const normalized = normalizeData(json);
                         
                         if(normalized.length === 0) throw new Error("No valid data found");
 
-                        setLoadingMessage("Updating database...");
+                        setLoadingMessage("Clearing old database...");
                         await db.substances.clear();
+
+                        setLoadingMessage(`Indexing ${normalized.length} records...`);
                         await db.substances.bulkAdd(normalized);
 
                         const dateStr = new Date().toLocaleDateString();
@@ -188,9 +235,12 @@
                         setLastUploadDate(dateStr);
                         setDbLoaded(true);
                         
-                        alert(`Success! Database updated with ${normalized.length} records.`);
+                        alert(`Success! Database updated with ${normalized.length} substances.`);
                     } catch (err) { alert("Error: " + err.message); } 
-                    finally { setIsLoading(false); setLoadingMessage(""); }
+                    finally { 
+                        setIsLoading(false); 
+                        setLoadingMessage("");
+                    }
                 };
                 reader.readAsText(file);
             };
@@ -206,24 +256,73 @@
                 }
             }
 
+            // --- 3. UPDATED LOGIC MAPPING ---
             const getRegInfo = (listId) => {
                 const id = String(listId || "").toLowerCase();
+                
+                // Security (Precursors)
+                if (id.includes("explosive") && (id.includes("annex i") || id.includes("restricted"))) return regulatoryInfo["explosives restricted"];
+                if (id.includes("explosive") && (id.includes("annex ii") || id.includes("reportable"))) return regulatoryInfo["explosives reportable"];
+                if (id.includes("drug") && id.includes("cat") && id.includes("1")) return regulatoryInfo["drug cat1"];
+                if (id.includes("drug") && (id.includes("cat") || id.includes("category"))) return regulatoryInfo["drug cat23"]; 
+
+                // Environment
+                if (id.includes("ozone") || id.includes("ods") || id.includes("1005/2009")) return regulatoryInfo["ods"];
+                if (id.includes("f-gas") || id.includes("fluorinated") || id.includes("517/2014")) return regulatoryInfo["fgas"];
+
+                // REACH & CLP
                 if (id.includes("annex iv")) return regulatoryInfo["annex iv"];
                 if (id.includes("annex xvii") || id.includes("restriction")) return regulatoryInfo["annex xvii"];
                 if (id.includes("annex xiv") || id.includes("authorisation")) return regulatoryInfo["annex xiv"];
-                if (id.includes("pop")) return regulatoryInfo["pop"];
-                if (id.includes("pic")) return regulatoryInfo["pic"];
                 if (id.includes("svhc") || id.includes("candidate")) return regulatoryInfo["svhc"];
-                if (id.includes("annex vi")) return regulatoryInfo["annex vi"];
+                if (id.includes("annex vi") || id.includes("clp")) return regulatoryInfo["annex vi"];
+                
+                // Other
+                if (id.includes("pop")) return regulatoryInfo["pop"];
+                
                 return null; 
             };
 
             const determineRisk = (listId) => {
                 const lowerList = String(listId || "").toLowerCase();
-                if (lowerList.includes("pop") || lowerList.includes("annex xvii") || lowerList.includes("restriction")) return { level: "prohibited", action: "RESTRICTED", desc: "Restricted / Prohibited" };
-                if (lowerList.includes("authorisation") || lowerList.includes("annex xiv") || lowerList.includes("annex vi")) return { level: "warning", action: "CHECK DUTIES", desc: "Authorisation / CMR Hazard" };
-                if (lowerList.includes("svhc") || lowerList.includes("candidate")) return { level: "watch", action: "WATCH LIST", desc: "SVHC Candidate" };
+
+                // RED: Prohibited / Strict License
+                if (
+                    lowerList.includes("annex xiv") || 
+                    lowerList.includes("authorisation") ||
+                    lowerList.includes("pop") || 
+                    lowerList.includes("ozone") || 
+                    (lowerList.includes("explosive") && lowerList.includes("annex i")) ||
+                    (lowerList.includes("drug") && lowerList.includes("cat") && lowerList.includes("1"))
+                ) {
+                    return { level: "prohibited", action: "STOP / LICENSE", desc: "Prohibited or Strict License" };
+                }
+
+                // RED/ORANGE: Annex XVII (Restricted)
+                if (lowerList.includes("annex xvii") || lowerList.includes("restriction")) {
+                    return { level: "prohibited", action: "RESTRICTED", desc: "Restricted Use" };
+                }
+
+                // ORANGE: Conditional / Declaration Required
+                if (
+                    lowerList.includes("annex vi") || 
+                    lowerList.includes("f-gas") || 
+                    (lowerList.includes("drug") && (lowerList.includes("cat") || lowerList.includes("category")))
+                ) {
+                    return { level: "warning", action: "CHECK DUTIES", desc: "Declaration / Quota / CMR" };
+                }
+
+                // YELLOW: Watch / Info Duty
+                if (
+                    lowerList.includes("svhc") || 
+                    lowerList.includes("candidate") || 
+                    (lowerList.includes("explosive") && lowerList.includes("annex ii"))
+                ) {
+                    return { level: "watch", action: "INFO DUTY", desc: "SVHC / Reportable" };
+                }
+
                 if (lowerList.includes("annex iv")) return { level: "low", action: "EXEMPT", desc: "Exempt" };
+
                 return { level: "unknown", action: "UNKNOWN", desc: `Listed in: ${listId}` };
             };
 
@@ -236,7 +335,10 @@
                     const rawQueries = inputText.split(/[\n,;]+/).map(q => q.trim()).filter(q => q);
                     const cleanQueries = rawQueries.map(q => String(q).replace(/[\s\u00A0]/g, "").toLowerCase());
 
-                    const dbMatches = await db.substances.where('cas').anyOf(cleanQueries).toArray();
+                    const dbMatches = await db.substances
+                        .where('cas')
+                        .anyOf(cleanQueries)
+                        .toArray();
 
                     const processedResults = rawQueries.map(originalQuery => {
                         const cleanQ = String(originalQuery).replace(/[\s\u00A0]/g, "").toLowerCase();
@@ -244,8 +346,11 @@
 
                         if (matches.length > 0) {
                             const entries = matches.map(m => ({ ...m, ...determineRisk(m.listId) }));
+                            // Deduplicate entries by list name
                             const uniqueMap = new Map();
                             entries.forEach(e => uniqueMap.set(e.listId.toLowerCase(), e));
+                            
+                            // Sort by severity (Prohibited first)
                             const uniqueEntries = Array.from(uniqueMap.values()).sort((a,b) => (
                                 {prohibited:4, warning:3, watch:2, low:1, unknown:0}[b.level] - {prohibited:4, warning:3, watch:2, low:1, unknown:0}[a.level]
                             ));
@@ -259,12 +364,24 @@
                                 found: true 
                             };
                         }
-                        return { cas: originalQuery, name: "No Match Found", entries: [], riskLevel: "unknown", action: "NOT LISTED", found: false };
+                        return { 
+                            cas: originalQuery, 
+                            name: "No Match Found", 
+                            entries: [], 
+                            riskLevel: "unknown", 
+                            action: "NOT LISTED", 
+                            found: false 
+                        };
                     });
                     
                     setResults(processedResults);
-                } catch (e) { console.error(e); alert("Search error"); } 
-                finally { setIsLoading(false); setLoadingMessage(""); }
+                } catch (e) {
+                    console.error(e);
+                    alert("Search error");
+                } finally {
+                    setIsLoading(false);
+                    setLoadingMessage("");
+                }
             };
             
             const handleKeyDown = (e) => { if (e.key === 'Enter') handleSearch(); };
@@ -280,36 +397,36 @@
             };
 
             const getGuideTitle = () => {
-                if(activeGuideCategory === 'prohibited') return "Restricted & Prohibited (Red)";
-                if(activeGuideCategory === 'warning') return "Authorisation & Hazards (Orange)";
-                if(activeGuideCategory === 'watch') return "SVHC Watch List (Yellow)";
-                return "Exemptions (Green)";
+                if(activeGuideCategory === 'prohibited') return "🔴 RED: Prohibited / Strict License";
+                if(activeGuideCategory === 'warning') return "🟠 ORANGE: Conditional / Declaration";
+                if(activeGuideCategory === 'watch') return "🟡 YELLOW: Warning / Info Duty";
+                return "🟢 GREEN: Exemptions";
             }
 
             if (isLoading) return (
                 <div className="min-h-screen flex flex-col items-center justify-center text-slate-500 font-sans bg-slate-50">
                     <Loader2 className="w-10 h-10 animate-spin text-indigo-600 mb-4" />
                     <h2 className="text-xl font-bold text-slate-700">{loadingMessage || "Loading System..."}</h2>
-                    <p className="text-sm mt-2">Processing large dataset via IndexedDB</p>
                 </div>
             );
 
             return (
                 <div className="min-h-screen bg-slate-50 font-sans text-slate-900 flex flex-col">
+                    {/* NAVBAR */}
                     <nav className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
                         <div className="max-w-7xl mx-auto px-4 h-16 flex justify-between items-center">
                             <div className="flex items-center gap-2">
                                 <ShieldCheck className="text-indigo-600 w-8 h-8" />
                                 <div>
                                     <h1 className="text-xl font-bold text-slate-900">ChemChecker <span className="text-indigo-600">Pro</span></h1>
-                                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Professional Compliance Tool</p>
+                                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Compliance & Import Safety</p>
                                 </div>
                             </div>
                             <div className="flex items-center gap-4 no-print">
                                 <div className="hidden md:flex gap-2">
-                                    <button onClick={() => setActiveGuideCategory('prohibited')} className="px-2 py-1 rounded bg-red-100 text-red-700 text-xs font-bold hover:bg-red-200 border border-red-200">Restricted</button>
-                                    <button onClick={() => setActiveGuideCategory('warning')} className="px-2 py-1 rounded bg-orange-100 text-orange-700 text-xs font-bold hover:bg-orange-200 border border-orange-200">Auth/Haz</button>
-                                    <button onClick={() => setActiveGuideCategory('watch')} className="px-2 py-1 rounded bg-yellow-100 text-yellow-700 text-xs font-bold hover:bg-yellow-200 border border-yellow-200">SVHC</button>
+                                    <button onClick={() => setActiveGuideCategory('prohibited')} className="px-2 py-1 rounded bg-red-100 text-red-700 text-xs font-bold hover:bg-red-200 border border-red-200">🔴 Prohibited</button>
+                                    <button onClick={() => setActiveGuideCategory('warning')} className="px-2 py-1 rounded bg-orange-100 text-orange-700 text-xs font-bold hover:bg-orange-200 border border-orange-200">🟠 Conditional</button>
+                                    <button onClick={() => setActiveGuideCategory('watch')} className="px-2 py-1 rounded bg-yellow-100 text-yellow-700 text-xs font-bold hover:bg-yellow-200 border border-yellow-200">🟡 Warning</button>
                                 </div>
                                 <div className="h-6 w-px bg-slate-200"></div>
                                 <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
@@ -324,6 +441,7 @@
                         </div>
                     </nav>
 
+                    {/* GUIDE MODAL (UPDATED) */}
                     {activeGuideCategory && (
                         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm no-print" onClick={() => setActiveGuideCategory(null)}>
                             <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full p-6" onClick={e => e.stopPropagation()}>
@@ -359,12 +477,13 @@
                         </div>
                     )}
 
+                    {/* MAIN CONTENT */}
                     <main className="flex-grow max-w-7xl w-full mx-auto px-4 py-8 space-y-8">
                         {!dbLoaded && (
                             <div className="max-w-xl mx-auto text-center border-2 border-dashed border-slate-300 rounded-xl p-10 bg-white no-print shadow-sm">
                                 <div className="bg-indigo-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"><HardDrive className="text-indigo-600 w-8 h-8" /></div>
-                                <h2 className="text-xl font-bold text-slate-800">Initialize High Performance Database</h2>
-                                <p className="text-sm text-slate-500 mt-2 mb-6">Upload your massive JSON file. Data is indexed locally for instant search.</p>
+                                <h2 className="text-xl font-bold text-slate-800">Initialize Compliance Database</h2>
+                                <p className="text-sm text-slate-500 mt-2 mb-6">Upload your JSON file containing REACH, Precursor, and ODS data.</p>
                                 <label className="cursor-pointer bg-indigo-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-indigo-700 transition shadow-lg inline-flex items-center gap-2">
                                     <Upload size={18} /> Select Database File
                                     <input type="file" accept=".json" onChange={handleFileUpload} className="hidden" />
@@ -375,15 +494,27 @@
                         {dbLoaded && (
                             <>
                                 <section className="max-w-4xl mx-auto no-print">
+                                    {/* UPDATED INTRODUCTION TEXT */}
+                                    <div className="mb-6 bg-blue-50 border border-blue-100 p-4 rounded-xl text-sm text-slate-700">
+                                        <div className="flex items-start gap-3">
+                                            <Info className="text-blue-600 w-5 h-5 flex-shrink-0 mt-0.5" />
+                                            <div>
+                                                <p className="font-semibold text-blue-800 mb-1">About This Tool</p>
+                                                <p className="mb-2">This web application is designed for the Netherlands sales team (and myself) to verify compliance restrictions for substances or components imported from outside the EU.</p>
+                                                <p>It checks CAS numbers against multiple regulatory frameworks, including <strong>REACH, Explosives & Drug Precursors, and Ozone Depleting Substances</strong>. If a CAS number is not found, there are no <em>known</em> listed restrictions.</p>
+                                            </div>
+                                        </div>
+                                    </div>
+
                                     <div className="bg-white rounded-2xl shadow-lg border border-slate-100 overflow-hidden">
                                         <div className="p-1 bg-gradient-to-r from-indigo-500 to-purple-600"></div>
                                         <div className="p-6">
-                                            <label className="block font-semibold text-slate-700 mb-2">Compliance Check</label>
+                                            <label className="block font-semibold text-slate-700 mb-2">Check Substance (CAS Number)</label>
                                             <div className="relative">
                                                 <input 
                                                     type="text"
                                                     className="w-full p-4 pr-12 border border-slate-200 bg-slate-50 rounded-xl text-slate-700 placeholder-slate-400 focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all font-mono text-sm shadow-inner"
-                                                    placeholder="Paste CAS numbers (e.g., 67-64-1, 50-00-0)"
+                                                    placeholder="Enter CAS numbers (e.g., 67-64-1, 50-00-0) one by one or separated by commas"
                                                     value={inputText}
                                                     onChange={(e) => setInputText(e.target.value)}
                                                     onKeyDown={handleKeyDown}
@@ -415,7 +546,7 @@
                                             {results.map((item, idx) => {
                                                 const styles = getStatusStyles(item.riskLevel);
                                                 return (
-                                                    <div key={idx} className={`bg-white rounded-xl shadow-sm border-l-8 ${styles.card} overflow-hidden`}>
+                                                    <div key={idx} className={`bg-white rounded-xl shadow-sm border-l-8 ${styles.card} overflow-hidden card`}>
                                                         <div className="flex">
                                                             <div className={`w-12 flex items-center justify-center bg-slate-50`}>
                                                                 {styles.icon}
@@ -431,13 +562,13 @@
                                                                     </span>
                                                                 </div>
                                                                 
-                                                                {item.found && (
+                                                                {item.found ? (
                                                                     <div className="mt-3 border-t pt-3">
                                                                         <table className="w-full text-sm text-left">
                                                                             <thead className="bg-slate-50 text-slate-500 font-medium">
                                                                                 <tr>
                                                                                     <th className="px-4 py-2 w-1/4">Regulatory List</th>
-                                                                                    <th className="px-4 py-2 w-1/4">Limit / Condition</th>
+                                                                                    <th className="px-4 py-2 w-1/6">EC Number</th>
                                                                                     <th className="px-4 py-2">Obligations / Notes</th>
                                                                                 </tr>
                                                                             </thead>
@@ -446,20 +577,8 @@
                                                                                     const regData = getRegInfo(entry.listId);
                                                                                     return (
                                                                                         <tr key={eIdx}>
-                                                                                            <td className="px-4 py-2.5 font-medium text-slate-700 capitalize">
-                                                                                                {entry.listId}
-                                                                                                <span className="block text-[10px] text-slate-400 font-mono mt-0.5">{entry.ec || ""}</span>
-                                                                                            </td>
-                                                                                            <td className="px-4 py-2.5 text-slate-800">
-                                                                                                {entry.limit ? (
-                                                                                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-100 font-bold text-xs border border-slate-200">
-                                                                                                        <Scale size={12} className="text-slate-500"/>
-                                                                                                        {entry.limit}
-                                                                                                    </span>
-                                                                                                ) : (
-                                                                                                    <span className="text-slate-300 text-xs">-</span>
-                                                                                                )}
-                                                                                            </td>
+                                                                                            <td className="px-4 py-2.5 font-medium text-slate-700 capitalize">{entry.listId}</td>
+                                                                                            <td className="px-4 py-2.5 font-mono text-slate-500 text-xs">{entry.ec || "-"}</td>
                                                                                             <td className="px-4 py-2.5 text-slate-600">
                                                                                                 <div className="flex flex-col gap-1">
                                                                                                     {entry.note && <span className="text-xs italic text-slate-500 mb-1">{entry.note}</span>}
@@ -482,6 +601,10 @@
                                                                                 })}
                                                                             </tbody>
                                                                         </table>
+                                                                    </div>
+                                                                ) : (
+                                                                    <div className="mt-3 text-sm text-slate-500 italic">
+                                                                        No known restrictions found in the current database for this CAS number.
                                                                     </div>
                                                                 )}
                                                             </div>
