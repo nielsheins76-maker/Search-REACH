@@ -3,18 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ChemChecker Pro | Compliance Tool</title>
+    <title>ChemChecker Pro | Compliance Screening</title>
     
-    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     
-    <!-- Babel for JSX -->
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     
-    <!-- Dexie.js for IndexedDB -->
     <script src="https://unpkg.com/dexie/dist/dexie.js"></script>
 
-    <!-- Custom Print & Scrollbar Styles -->
     <style>
         body { background-color: #f8fafc; }
         
@@ -25,7 +21,7 @@
         .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 
         @media print {
-            nav, .no-print, button, input[type="file"], .toast-container { display: none !important; }
+            nav, .no-print, button, input[type="file"], .toast-container, .modal-overlay { display: none !important; }
             body { background-color: white; -webkit-print-color-adjust: exact; }
             #root { margin: 0; padding: 0; }
             .print-break-inside { page-break-inside: avoid; }
@@ -43,11 +39,12 @@
             Search, AlertTriangle, CheckCircle, Ban, Users, Activity, Info, 
             ShieldCheck, Eraser, FileDown, Upload, Trash2, BookOpen, X,
             ClipboardCheck, FileText, ArrowRight, AlertOctagon, Database, Table, HardDrive, Loader2, Scale,
-            Check, XCircle
+            Check, XCircle, CalendarClock, Gavel, FileSpreadsheet
         } from 'https://esm.sh/lucide-react@0.263.1';
 
         // --- CONSTANTS ---
-        const INTERNAL_VERSION = "5.2 - Refined UX"; 
+        const INTERNAL_VERSION = "5.4 - CAS Validation + CSV"; 
+        const SIX_MONTHS_MS = 15778800000; // Approx 6 months
         
         // --- DATABASE SETUP ---
         const db = new Dexie("ChemCheckerDB");
@@ -55,6 +52,31 @@
             settings: 'id, value',
             substances: '++id, cas, name, listId' 
         });
+
+        // --- UTILS: CAS VALIDATOR ---
+        const validateCAS = (casString) => {
+            if (!casString) return false;
+            // 1. Clean string: remove anything that isn't a digit
+            const digits = casString.replace(/[^\d]/g, '');
+            
+            // 2. Minimum length check (CAS is at least 5 digits: X-XX-X)
+            if (digits.length < 5) return false;
+
+            // 3. Extract check digit (last digit)
+            const checkDigit = parseInt(digits.slice(-1), 10);
+            
+            // 4. Extract the core number (everything except last digit)
+            const core = digits.slice(0, -1);
+
+            // 5. Calculate checksum: sum(digit * position)
+            // Reverse to make position calculation easy (1st from right, 2nd from right...)
+            const sum = core.split('').reverse().reduce((acc, digit, idx) => {
+                return acc + (parseInt(digit, 10) * (idx + 1));
+            }, 0);
+
+            // 6. Compare remainder
+            return (sum % 10) === checkDigit;
+        };
 
         // --- TOAST NOTIFICATION COMPONENT ---
         const ToastContainer = ({ toasts, removeToast }) => (
@@ -74,14 +96,41 @@
             </div>
         );
 
+        // --- DISCLAIMER MODAL COMPONENT ---
+        const DisclaimerModal = ({ onAccept }) => (
+            <div className="fixed inset-0 z-[100] bg-slate-900/90 flex items-center justify-center p-4 backdrop-blur-sm modal-overlay">
+                <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full p-8 border-t-4 border-indigo-600">
+                    <div className="flex items-center gap-3 mb-4 text-indigo-900">
+                        <Gavel size={32} />
+                        <h2 className="text-2xl font-bold">Legal Disclaimer</h2>
+                    </div>
+                    <div className="prose prose-sm text-slate-600 mb-6 bg-slate-50 p-4 rounded-lg border border-slate-200">
+                        <p className="font-bold mb-2">Please read before proceeding:</p>
+                        <ul className="list-disc pl-4 space-y-2">
+                            <li>This software is a <strong>screening tool</strong> for informational purposes only.</li>
+                            <li>It does <strong>not</strong> constitute legal advice or a guarantee of compliance.</li>
+                            <li>Regulatory status (e.g., Annex XVII) depends on specific conditions of use (mixtures vs. articles) which this tool cannot verify.</li>
+                            <li>Users must verify all results against official ECHA publications and legal texts.</li>
+                        </ul>
+                    </div>
+                    <button 
+                        onClick={onAccept}
+                        className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition-colors flex items-center justify-center gap-2"
+                    >
+                        I Acknowledge & Accept <ArrowRight size={18} />
+                    </button>
+                </div>
+            </div>
+        );
+
         // --- REGULATORY KNOWLEDGE BASE ---
         const regulatoryInfo = {
             "annex xvii": { 
-                category: "prohibited", 
-                title: "REACH Annex XVII (Restrictions)", 
-                description: "Restricts the manufacture, placing on the market, or use.", 
-                implication: "Check limit value carefully. Usually 0.1% or banned for specific uses.", 
-                paperwork: "Statement of Compliance (SoC).", 
+                category: "restricted", 
+                title: "REACH Annex XVII (Restricted Uses)", 
+                description: "Substance is restricted for specific applications or conditions.", 
+                implication: "CONDITIONAL: Check Annex XVII Col 2. May be banned in consumer goods but allowed in industry.", 
+                paperwork: "Statement of Compliance (SoC) proving use conditions met.", 
                 riskColor: "text-red-700 bg-red-50 border-red-200" 
             },
             "pop": { 
@@ -96,7 +145,7 @@
                 category: "warning", 
                 title: "REACH Annex XIV (Authorisation List)", 
                 description: "Use banned after 'Sunset Date' without Authorisation.", 
-                implication: "USE BAN: Cannot use without Authorisation number.", 
+                implication: "USE BAN: Cannot use without specific Authorisation number.", 
                 paperwork: "Proof of Authorisation OR Article 33 Declaration.", 
                 riskColor: "text-orange-700 bg-orange-50 border-orange-200" 
             },
@@ -104,7 +153,7 @@
                 category: "classification", 
                 title: "CLP Annex VI (Harmonised Classification)", 
                 description: "Legally binding classification (CMR).", 
-                implication: "Ensure SDS and Labels match.", 
+                implication: "Ensure SDS and Labels match harmonised classification.", 
                 paperwork: "Up-to-date Safety Data Sheet (SDS).", 
                 riskColor: "text-emerald-700 bg-emerald-50 border-emerald-200" 
             },
@@ -112,7 +161,7 @@
                 category: "watch", 
                 title: "SVHC Candidate List (Art. 59)", 
                 description: "Candidate substances for Annex XIV.", 
-                implication: "Threshold >0.1% w/w triggers Article 33 & SCIP.", 
+                implication: "Threshold >0.1% w/w triggers Article 33 & SCIP duties.", 
                 paperwork: "Article 33 Declaration & SCIP Number.", 
                 riskColor: "text-yellow-700 bg-yellow-50 border-yellow-200" 
             },
@@ -140,10 +189,12 @@
             const [dbLoaded, setDbLoaded] = useState(false);
             const [recordCount, setRecordCount] = useState(0);
             const [lastUploadDate, setLastUploadDate] = useState("Never");
+            const [lastUploadTimestamp, setLastUploadTimestamp] = useState(0);
             const [isLoading, setIsLoading] = useState(true);
             const [loadingMessage, setLoadingMessage] = useState("");
             const [activeGuideCategory, setActiveGuideCategory] = useState(null);
             const [toasts, setToasts] = useState([]);
+            const [disclaimerAccepted, setDisclaimerAccepted] = useState(false);
 
             // --- Toast Logic ---
             const addToast = (message, type = 'info') => {
@@ -156,15 +207,24 @@
                 setToasts(prev => prev.filter(t => t.id !== id));
             };
 
+            const isDataOutdated = () => {
+                if (!lastUploadTimestamp) return false;
+                const age = Date.now() - lastUploadTimestamp;
+                return age > SIX_MONTHS_MS;
+            };
+
             useEffect(() => {
                 const initDB = async () => {
                     try {
                         const dateRecord = await db.settings.get("uploadDate");
+                        const timestampRecord = await db.settings.get("uploadTimestamp");
                         const count = await db.substances.count();
+                        
                         if (count > 0) {
                             setDbLoaded(true);
                             setRecordCount(count);
                             setLastUploadDate(dateRecord ? dateRecord.value : "Unknown");
+                            setLastUploadTimestamp(timestampRecord ? timestampRecord.value : 0);
                         }
                     } catch (err) { 
                         console.error("DB Load Error", err); 
@@ -201,7 +261,7 @@
                         note: item[noteKey] || "",
                         limit: limitKey ? item[limitKey] : ""
                     };
-                }).filter(item => item.cas && item.cas.length > 3); // Basic filter for empty rows
+                }).filter(item => item.cas && item.cas.length > 3);
             };
 
             const handleFileUpload = (event) => {
@@ -231,10 +291,14 @@
                         await db.substances.bulkAdd(normalized);
 
                         const dateStr = new Date().toLocaleDateString();
+                        const timestamp = Date.now();
+                        
                         await db.settings.put({ id: "uploadDate", value: dateStr });
+                        await db.settings.put({ id: "uploadTimestamp", value: timestamp });
                         
                         setRecordCount(normalized.length);
                         setLastUploadDate(dateStr);
+                        setLastUploadTimestamp(timestamp);
                         setDbLoaded(true);
                         
                         addToast(`Database updated with ${normalized.length} records!`, "success");
@@ -272,12 +336,51 @@
 
             const determineRisk = (listId) => {
                 const lowerList = String(listId || "").toLowerCase();
-                if (lowerList.includes("pop") || lowerList.includes("annex xvii") || lowerList.includes("restriction")) return { level: "prohibited", action: "RESTRICTED", desc: "Restricted / Prohibited" };
+                if (lowerList.includes("pop")) return { level: "prohibited", action: "BANNED", desc: "Prohibited" };
+                if (lowerList.includes("annex xvii") || lowerList.includes("restriction")) return { level: "restricted", action: "RESTRICTED", desc: "Conditional Restriction" };
                 if (lowerList.includes("authorisation") || lowerList.includes("annex xiv")) return { level: "warning", action: "CHECK DUTIES", desc: "Authorisation / CMR Hazard" };
                 if (lowerList.includes("svhc") || lowerList.includes("candidate")) return { level: "watch", action: "WATCH LIST", desc: "SVHC Candidate" };
                 if (lowerList.includes("annex vi")) return { level: "classification", action: "HARMONISED (CLP)", desc: "Harmonised Classification" };
                 if (lowerList.includes("annex iv")) return { level: "low", action: "EXEMPT", desc: "Exempt" };
                 return { level: "unknown", action: "UNKNOWN", desc: `Listed in: ${listId}` };
+            };
+
+            // --- CSV EXPORT FUNCTION ---
+            const exportCSV = () => {
+                if (!results || results.length === 0) return;
+
+                const headers = ["CAS Input", "Substance Name", "Status", "Risk Level", "Lists Found", "List Details"];
+                
+                // Construct CSV rows
+                const rows = results.map(r => {
+                    const lists = r.entries.map(e => e.listId).join('; ');
+                    const details = r.entries.map(e => `${e.listId}: ${e.limit || 'No specific limit'}`).join(' | ');
+                    
+                    // Escape quotes and wrap in quotes for CSV safety
+                    const safeName = `"${(r.name || "").replace(/"/g, '""')}"`;
+                    const safeDetails = `"${details.replace(/"/g, '""')}"`;
+
+                    return [
+                        r.cas, 
+                        safeName, 
+                        r.action, 
+                        r.riskLevel, 
+                        `"${lists}"`, 
+                        safeDetails
+                    ].join(",");
+                });
+
+                const csvContent = [headers.join(","), ...rows].join("\n");
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const url = URL.createObjectURL(blob);
+                
+                // Trigger download
+                const link = document.createElement("a");
+                link.setAttribute("href", url);
+                link.setAttribute("download", `Compliance_Report_${new Date().toISOString().split('T')[0]}.csv`);
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
             };
 
             const handleSearch = async () => {
@@ -296,18 +399,29 @@
 
                     const processedResults = rawQueries.map(originalQuery => {
                         const cleanQ = String(originalQuery).replace(/[\s\u00A0]/g, "").toLowerCase();
+                        
+                        // CAS VALIDATION CHECK
+                        if (!validateCAS(cleanQ)) {
+                            return {
+                                cas: originalQuery,
+                                name: "Invalid CAS Checksum",
+                                entries: [],
+                                riskLevel: "error",
+                                action: "INVALID FORMAT",
+                                found: false
+                            };
+                        }
+
                         const matches = dbMatches.filter(m => m.cas === cleanQ);
 
                         if (matches.length > 0) {
                             const entries = matches.map(m => ({ ...m, ...determineRisk(m.listId) }));
-                            // Remove duplicates based on list name
                             const uniqueMap = new Map();
                             entries.forEach(e => uniqueMap.set(e.listId.toLowerCase(), e));
                             
-                            // Sort by severity
                             const uniqueEntries = Array.from(uniqueMap.values()).sort((a,b) => (
-                                {prohibited:5, warning:4, watch:3, classification:2, low:1, unknown:0}[b.level] - 
-                                {prohibited:5, warning:4, watch:3, classification:2, low:1, unknown:0}[a.level]
+                                {prohibited:6, restricted: 5, warning:4, watch:3, classification:2, low:1, unknown:0}[b.level] - 
+                                {prohibited:6, restricted: 5, warning:4, watch:3, classification:2, low:1, unknown:0}[a.level]
                             ));
 
                             return { 
@@ -335,17 +449,20 @@
             
             const getStatusStyles = (level) => {
                 switch(level) {
-                    case 'prohibited': return { card: 'border-red-600', flag: 'bg-red-600', badge: 'bg-red-50 text-red-700', icon: <Ban className="text-red-600" /> };
-                    case 'warning': return { card: 'border-orange-500', flag: 'bg-orange-500', badge: 'bg-orange-50 text-orange-800', icon: <AlertTriangle className="text-orange-600" /> };
+                    case 'prohibited': return { card: 'border-red-600', flag: 'bg-red-600 text-white', badge: 'bg-red-50 text-red-700', icon: <Ban className="text-red-600" /> };
+                    case 'restricted': return { card: 'border-red-500', flag: 'bg-red-100 text-red-800', badge: 'bg-red-50 text-red-700', icon: <AlertOctagon className="text-red-500" /> };
+                    case 'warning': return { card: 'border-orange-500', flag: 'bg-orange-500 text-white', badge: 'bg-orange-50 text-orange-800', icon: <AlertTriangle className="text-orange-600" /> };
                     case 'watch': return { card: 'border-yellow-400', flag: 'bg-yellow-400 text-black', badge: 'bg-yellow-50 text-yellow-800', icon: <Users className="text-yellow-600" /> };
-                    case 'classification': return { card: 'border-emerald-500', flag: 'bg-emerald-500', badge: 'bg-emerald-50 text-emerald-700', icon: <Activity className="text-emerald-600" /> };
-                    case 'low': return { card: 'border-green-500', flag: 'bg-green-500', badge: 'bg-green-50 text-green-700', icon: <CheckCircle className="text-green-600" /> };
-                    default: return { card: 'border-slate-300', flag: 'bg-slate-500', badge: 'bg-slate-100', icon: <Info className="text-slate-400" /> };
+                    case 'classification': return { card: 'border-emerald-500', flag: 'bg-emerald-500 text-white', badge: 'bg-emerald-50 text-emerald-700', icon: <Activity className="text-emerald-600" /> };
+                    case 'low': return { card: 'border-green-500', flag: 'bg-green-500 text-white', badge: 'bg-green-50 text-green-700', icon: <CheckCircle className="text-green-600" /> };
+                    case 'error': return { card: 'border-slate-400 border-dashed', flag: 'bg-slate-600 text-white', badge: 'bg-slate-100 text-slate-800', icon: <XCircle className="text-slate-400" /> };
+                    default: return { card: 'border-slate-300', flag: 'bg-slate-500 text-white', badge: 'bg-slate-100', icon: <Info className="text-slate-400" /> };
                 }
             };
 
             const getGuideTitle = () => {
-                if(activeGuideCategory === 'prohibited') return "Restricted & Prohibited (Red)";
+                if(activeGuideCategory === 'prohibited') return "Prohibited (Red)";
+                if(activeGuideCategory === 'restricted') return "Restricted / Conditional (Red)";
                 if(activeGuideCategory === 'warning') return "Authorisation & Hazards (Orange)";
                 if(activeGuideCategory === 'watch') return "SVHC Watch List (Yellow)";
                 if(activeGuideCategory === 'classification') return "Harmonised (CLP) (Green)";
@@ -362,6 +479,7 @@
 
             return (
                 <div className="min-h-screen bg-slate-50 font-sans text-slate-900 flex flex-col">
+                    {!disclaimerAccepted && <DisclaimerModal onAccept={() => setDisclaimerAccepted(true)} />}
                     <ToastContainer toasts={toasts} removeToast={removeToast} />
                     
                     <nav className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm print:hidden">
@@ -370,22 +488,24 @@
                                 <ShieldCheck className="text-indigo-600 w-8 h-8" />
                                 <div>
                                     <h1 className="text-xl font-bold text-slate-900">ChemChecker <span className="text-indigo-600">Pro</span></h1>
-                                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Professional Compliance Tool</p>
+                                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Compliance Screening Tool</p>
                                 </div>
                             </div>
                             <div className="flex items-center gap-4 no-print">
                                 <div className="hidden md:flex gap-2">
-                                    <button onClick={() => setActiveGuideCategory('prohibited')} className="px-2 py-1 rounded bg-red-100 text-red-700 text-xs font-bold hover:bg-red-200 border border-red-200 transition">Restricted</button>
+                                    <button onClick={() => setActiveGuideCategory('restricted')} className="px-2 py-1 rounded bg-red-100 text-red-700 text-xs font-bold hover:bg-red-200 border border-red-200 transition">Restricted</button>
                                     <button onClick={() => setActiveGuideCategory('warning')} className="px-2 py-1 rounded bg-orange-100 text-orange-700 text-xs font-bold hover:bg-orange-200 border border-orange-200 transition">Auth/Haz</button>
                                     <button onClick={() => setActiveGuideCategory('watch')} className="px-2 py-1 rounded bg-yellow-100 text-yellow-700 text-xs font-bold hover:bg-yellow-200 border border-yellow-200 transition">SVHC</button>
-                                    <button onClick={() => setActiveGuideCategory('classification')} className="px-2 py-1 rounded bg-emerald-100 text-emerald-700 text-xs font-bold hover:bg-emerald-200 border border-emerald-200 transition">Harmonised (CLP)</button>
+                                    <button onClick={() => setActiveGuideCategory('classification')} className="px-2 py-1 rounded bg-emerald-100 text-emerald-700 text-xs font-bold hover:bg-emerald-200 border border-emerald-200 transition">CLP</button>
                                 </div>
                                 <div className="h-6 w-px bg-slate-200"></div>
-                                <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
-                                    <Database size={16} className={dbLoaded ? "text-green-600" : "text-slate-400"} />
+                                <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border ${isDataOutdated() ? 'bg-amber-50 border-amber-300' : 'bg-slate-100 border-slate-200'}`}>
+                                    <Database size={16} className={dbLoaded ? (isDataOutdated() ? "text-amber-500" : "text-green-600") : "text-slate-400"} />
                                     <div className="text-xs">
                                         <span className="block font-bold text-slate-700">{dbLoaded ? `${recordCount.toLocaleString()} Records` : "No Data"}</span>
-                                        <span className="block text-slate-500 text-[10px]">Date: {lastUploadDate}</span>
+                                        <span className={`block text-[10px] ${isDataOutdated() ? "text-amber-700 font-bold" : "text-slate-500"}`}>
+                                            Date: {lastUploadDate} {isDataOutdated() && "⚠️ OLD"}
+                                        </span>
                                     </div>
                                     {dbLoaded && <button onClick={clearDatabase} className="ml-2 text-slate-400 hover:text-red-600 transition"><Trash2 size={16} /></button>}
                                 </div>
@@ -430,10 +550,20 @@
                     )}
 
                     <main className="flex-grow max-w-7xl w-full mx-auto px-4 py-8 space-y-8">
+                        {isDataOutdated() && dbLoaded && (
+                            <div className="bg-amber-50 border-l-4 border-amber-500 p-4 rounded-r-lg shadow-sm flex items-start gap-3 no-print">
+                                <CalendarClock className="text-amber-600 flex-shrink-0" />
+                                <div>
+                                    <h3 className="font-bold text-amber-800">Database Outdated</h3>
+                                    <p className="text-sm text-amber-700">Your regulatory data was uploaded over 6 months ago. REACH lists (SVHC, Annex XVII) change frequently. Please upload a new JSON export to ensure accurate screening.</p>
+                                </div>
+                            </div>
+                        )}
+
                         {!dbLoaded && (
                             <div className="max-w-xl mx-auto text-center border-2 border-dashed border-slate-300 rounded-xl p-10 bg-white no-print shadow-sm hover:border-indigo-400 transition-colors">
                                 <div className="bg-indigo-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"><HardDrive className="text-indigo-600 w-8 h-8" /></div>
-                                <h2 className="text-xl font-bold text-slate-800">Initialize High Performance Database</h2>
+                                <h2 className="text-xl font-bold text-slate-800">Initialize Screening Database</h2>
                                 <p className="text-sm text-slate-500 mt-2 mb-6">Upload your massive JSON file. Data is indexed locally for instant search.</p>
                                 <label className="cursor-pointer bg-indigo-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-indigo-700 transition shadow-lg inline-flex items-center gap-2 active:transform active:scale-95">
                                     <Upload size={18} /> Select Database File
@@ -448,7 +578,7 @@
                                     <div className="bg-white rounded-2xl shadow-lg border border-slate-100 overflow-hidden">
                                         <div className="p-1 bg-gradient-to-r from-indigo-500 to-purple-600"></div>
                                         <div className="p-6">
-                                            <label className="block font-semibold text-slate-700 mb-2">Compliance Check</label>
+                                            <label className="block font-semibold text-slate-700 mb-2">Quick Screen</label>
                                             <div className="relative">
                                                 <input 
                                                     type="text"
@@ -473,12 +603,17 @@
                                     <section className="print:w-full">
                                         <div className="flex justify-between items-end border-b pb-4 mb-6">
                                             <div>
-                                                <h2 className="text-2xl font-bold text-slate-800">Compliance Report</h2>
+                                                <h2 className="text-2xl font-bold text-slate-800">Screening Report</h2>
                                                 <p className="text-slate-500 text-sm">Generated on {new Date().toLocaleDateString()}</p>
                                             </div>
-                                            <button onClick={() => window.print()} className="no-print bg-slate-100 text-slate-700 px-4 py-2 rounded-lg font-medium hover:bg-slate-200 flex items-center gap-2 transition">
-                                                <FileText size={18} /> Print Report
-                                            </button>
+                                            <div className="flex gap-2 no-print">
+                                                <button onClick={exportCSV} className="bg-green-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-green-700 flex items-center gap-2 transition shadow-sm">
+                                                    <FileSpreadsheet size={18} /> Export CSV
+                                                </button>
+                                                <button onClick={() => window.print()} className="bg-slate-100 text-slate-700 px-4 py-2 rounded-lg font-medium hover:bg-slate-200 flex items-center gap-2 transition">
+                                                    <FileText size={18} /> Print PDF
+                                                </button>
+                                            </div>
                                         </div>
 
                                         <div className="grid gap-6">
@@ -496,7 +631,7 @@
                                                                         <h3 className="text-lg font-bold font-mono text-slate-900">{item.cas}</h3>
                                                                         <p className="text-sm text-slate-600 font-medium">{item.name}</p>
                                                                     </div>
-                                                                    <span className={`px-3 py-1 rounded text-xs font-bold uppercase ${styles.badge} ${styles.flag.includes('text-white') ? 'text-white' : ''} ${styles.flag}`}>
+                                                                    <span className={`px-3 py-1 rounded text-xs font-bold uppercase ${styles.badge} ${styles.flag}`}>
                                                                         {item.action}
                                                                     </span>
                                                                 </div>
@@ -570,6 +705,13 @@
                         <h3 className="font-bold text-slate-800">ADDEV Materials Aerospace B.V.</h3>
                         <p className="text-xs text-slate-500 mt-1">Created by: N. Heins (HSE Specialist)</p>
                         <p className="text-xs text-slate-400 mt-2">Database: {dbLoaded ? `${recordCount.toLocaleString()} substances` : "Not Loaded"} • Last Upload: {lastUploadDate}</p>
+                        <div className="mt-4 max-w-2xl mx-auto px-4">
+                            <p className="text-[10px] text-slate-400 leading-relaxed border-t border-slate-100 pt-2">
+                                <strong>DISCLAIMER:</strong> This tool is for preliminary screening only and does not constitute legal advice. 
+                                Compliance with REACH, CLP, and other regulations depends on specific conditions of use, mixture concentrations, and regional laws. 
+                                The user is solely responsible for verifying results against official ECHA publications and legal texts.
+                            </p>
+                        </div>
                     </footer>
                 </div>
             );
