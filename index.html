@@ -275,7 +275,7 @@
                 if (lowerList.includes("pop") || lowerList.includes("annex xvii") || lowerList.includes("restriction")) return { level: "prohibited", action: "RESTRICTED", desc: "Restricted / Prohibited" };
                 if (lowerList.includes("authorisation") || lowerList.includes("annex xiv")) return { level: "warning", action: "CHECK DUTIES", desc: "Authorisation / CMR Hazard" };
                 if (lowerList.includes("svhc") || lowerList.includes("candidate")) return { level: "watch", action: "WATCH LIST", desc: "SVHC Candidate" };
-                if (lowerList.includes("annex vi")) return { level: "classification", action: "CLASSIFIED", desc: "Harmonised Classification" };
+                if (lowerList.includes("annex vi")) return { level: "classification", action: "HARMONISED (CLP)", desc: "Harmonised Classification" };
                 if (lowerList.includes("annex iv")) return { level: "low", action: "EXEMPT", desc: "Exempt" };
                 return { level: "unknown", action: "UNKNOWN", desc: `Listed in: ${listId}` };
             };
@@ -348,7 +348,7 @@
                 if(activeGuideCategory === 'prohibited') return "Restricted & Prohibited (Red)";
                 if(activeGuideCategory === 'warning') return "Authorisation & Hazards (Orange)";
                 if(activeGuideCategory === 'watch') return "SVHC Watch List (Yellow)";
-                if(activeGuideCategory === 'classification') return "Harmonised Classification (Green)";
+                if(activeGuideCategory === 'classification') return "Harmonised (CLP) (Green)";
                 return "Exemptions (Green)";
             }
 
@@ -378,7 +378,7 @@
                                     <button onClick={() => setActiveGuideCategory('prohibited')} className="px-2 py-1 rounded bg-red-100 text-red-700 text-xs font-bold hover:bg-red-200 border border-red-200 transition">Restricted</button>
                                     <button onClick={() => setActiveGuideCategory('warning')} className="px-2 py-1 rounded bg-orange-100 text-orange-700 text-xs font-bold hover:bg-orange-200 border border-orange-200 transition">Auth/Haz</button>
                                     <button onClick={() => setActiveGuideCategory('watch')} className="px-2 py-1 rounded bg-yellow-100 text-yellow-700 text-xs font-bold hover:bg-yellow-200 border border-yellow-200 transition">SVHC</button>
-                                    <button onClick={() => setActiveGuideCategory('classification')} className="px-2 py-1 rounded bg-emerald-100 text-emerald-700 text-xs font-bold hover:bg-emerald-200 border border-emerald-200 transition">Classified</button>
+                                    <button onClick={() => setActiveGuideCategory('classification')} className="px-2 py-1 rounded bg-emerald-100 text-emerald-700 text-xs font-bold hover:bg-emerald-200 border border-emerald-200 transition">Harmonised (CLP)</button>
                                 </div>
                                 <div className="h-6 w-px bg-slate-200"></div>
                                 <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
