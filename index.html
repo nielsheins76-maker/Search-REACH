@@ -6,26 +6,23 @@
     <title>ChemChecker Pro | Compliance Screening</title>
     
     <script src="https://cdn.tailwindcss.com"></script>
-    
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    
     <script src="https://unpkg.com/dexie/dist/dexie.js"></script>
 
     <style>
         body { background-color: #f8fafc; }
-        
-        /* Custom Scrollbar for tables */
         .custom-scrollbar::-webkit-scrollbar { height: 8px; width: 8px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: #f1f5f9; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
-
+        
         @media print {
-            nav, .no-print, button, input[type="file"], .toast-container, .modal-overlay { display: none !important; }
+            nav, .no-print, button, input[type="file"], .toast-container, .modal-overlay, .filter-bar { display: none !important; }
             body { background-color: white; -webkit-print-color-adjust: exact; }
             #root { margin: 0; padding: 0; }
             .print-break-inside { page-break-inside: avoid; }
             td, th { color: black !important; border: 1px solid #e2e8f0 !important; }
+            footer { display: block !important; border: none !important; }
         }
     </style>
 </head>
@@ -33,73 +30,59 @@
     <div id="root"></div>
 
     <script type="text/babel" data-type="module">
-        import React, { useState, useEffect, useCallback } from 'https://esm.sh/react@18.2.0';
+        import React, { useState, useEffect, useMemo } from 'https://esm.sh/react@18.2.0';
         import { createRoot } from 'https://esm.sh/react-dom@18.2.0/client';
         import { 
             Search, AlertTriangle, CheckCircle, Ban, Users, Activity, Info, 
-            ShieldCheck, Eraser, FileDown, Upload, Trash2, BookOpen, X,
-            ClipboardCheck, FileText, ArrowRight, AlertOctagon, Database, Table, HardDrive, Loader2, Scale,
-            Check, XCircle, CalendarClock, Gavel, FileSpreadsheet
+            ShieldCheck, Eraser, Upload, Trash2, BookOpen, X,
+            ClipboardCheck, FileText, ArrowRight, AlertOctagon, Database, Loader2, Scale,
+            Check, XCircle, CalendarClock, Gavel, FileSpreadsheet, Filter, PieChart, ExternalLink
         } from 'https://esm.sh/lucide-react@0.263.1';
 
         // --- CONSTANTS ---
-        const INTERNAL_VERSION = "5.4 - CAS Validation + CSV"; 
-        const SIX_MONTHS_MS = 15778800000; // Approx 6 months
+        const INTERNAL_VERSION = "7.1 - Date Status Colors"; 
+        const SIX_MONTHS_MS = 15778800000; // Approx 6 months in milliseconds
         
         // --- DATABASE SETUP ---
         const db = new Dexie("ChemCheckerDB");
-        db.version(2).stores({
+        db.version(3).stores({
             settings: 'id, value',
-            substances: '++id, cas, name, listId' 
+            substances: '++id, cas, name, ec, listId' 
         });
 
-        // --- UTILS: CAS VALIDATOR ---
+        // --- REGULATORY DATA ---
+        const regulatoryInfo = {
+            "annex xvii": { category: "restricted", title: "REACH Annex XVII", description: "Substance is restricted for specific applications or conditions.", implication: "CONDITIONAL: Check Annex XVII Col 2. May be banned in consumer goods.", paperwork: "Statement of Compliance (SoC).", riskColor: "text-red-700 bg-red-50 border-red-200" },
+            "pop": { category: "prohibited", title: "POPs Regulation", description: "Persistent Organic Pollutants. Strict prohibition.", implication: "BANNED: Often Trace Contaminant limit (UTC) applies.", paperwork: "Supplier Declaration of Absence.", riskColor: "text-red-900 bg-red-100 border-red-300" },
+            "annex xiv": { category: "warning", title: "REACH Annex XIV", description: "Use banned after 'Sunset Date' without Authorisation.", implication: "USE BAN: Cannot use without specific Authorisation number.", paperwork: "Proof of Authorisation OR Article 33 Declaration.", riskColor: "text-orange-700 bg-orange-50 border-orange-200" },
+            "annex vi": { category: "classification", title: "CLP Annex VI", description: "Legally binding classification (CMR).", implication: "Ensure SDS and Labels match harmonised classification.", paperwork: "Up-to-date Safety Data Sheet (SDS).", riskColor: "text-emerald-700 bg-emerald-50 border-emerald-200" },
+            "svhc": { category: "watch", title: "SVHC Candidate List", description: "Candidate substances for Annex XIV.", implication: "Threshold >0.1% w/w triggers Article 33 & SCIP duties.", paperwork: "Article 33 Declaration & SCIP Number.", riskColor: "text-yellow-700 bg-yellow-50 border-yellow-200" },
+            "annex iv": { category: "low", title: "REACH Annex IV", description: "Minimum risk substances.", implication: "EXEMPT: Generally considered safe.", paperwork: "None (Standard SDS).", riskColor: "text-green-700 bg-green-50 border-green-200" }
+        };
+
+        // --- UTILS ---
         const validateCAS = (casString) => {
             if (!casString) return false;
-            // 1. Clean string: remove anything that isn't a digit
             const digits = casString.replace(/[^\d]/g, '');
-            
-            // 2. Minimum length check (CAS is at least 5 digits: X-XX-X)
             if (digits.length < 5) return false;
-
-            // 3. Extract check digit (last digit)
             const checkDigit = parseInt(digits.slice(-1), 10);
-            
-            // 4. Extract the core number (everything except last digit)
             const core = digits.slice(0, -1);
-
-            // 5. Calculate checksum: sum(digit * position)
-            // Reverse to make position calculation easy (1st from right, 2nd from right...)
-            const sum = core.split('').reverse().reduce((acc, digit, idx) => {
-                return acc + (parseInt(digit, 10) * (idx + 1));
-            }, 0);
-
-            // 6. Compare remainder
+            const sum = core.split('').reverse().reduce((acc, digit, idx) => acc + (parseInt(digit, 10) * (idx + 1)), 0);
             return (sum % 10) === checkDigit;
         };
 
-        // --- TOAST NOTIFICATION COMPONENT ---
-        const ToastContainer = ({ toasts, removeToast }) => (
-            <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 toast-container">
-                {toasts.map(toast => (
-                    <div key={toast.id} className={`flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg text-white transform transition-all duration-300 translate-y-0 ${
-                        toast.type === 'error' ? 'bg-red-600' : 
-                        toast.type === 'success' ? 'bg-green-600' : 'bg-slate-800'
-                    }`}>
-                        {toast.type === 'success' && <Check size={18} />}
-                        {toast.type === 'error' && <XCircle size={18} />}
-                        {toast.type === 'info' && <Info size={18} />}
-                        <span className="text-sm font-medium">{toast.message}</span>
-                        <button onClick={() => removeToast(toast.id)} className="ml-2 hover:opacity-75"><X size={14}/></button>
-                    </div>
-                ))}
-            </div>
-        );
+        const detectInputType = (str) => {
+            const clean = str.trim();
+            if (/^\d{1,7}-\d{2}-\d$/.test(clean)) return 'CAS'; 
+            if (/^\d{3}-\d{3}-\d$/.test(clean)) return 'EC';   
+            return 'NAME';
+        };
 
-        // --- DISCLAIMER MODAL COMPONENT ---
+        // --- COMPONENTS ---
+
         const DisclaimerModal = ({ onAccept }) => (
             <div className="fixed inset-0 z-[100] bg-slate-900/90 flex items-center justify-center p-4 backdrop-blur-sm modal-overlay">
-                <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full p-8 border-t-4 border-indigo-600">
+                <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full p-8 border-t-4 border-indigo-600 animate-fade-in">
                     <div className="flex items-center gap-3 mb-4 text-indigo-900">
                         <Gavel size={32} />
                         <h2 className="text-2xl font-bold">Legal Disclaimer</h2>
@@ -123,424 +106,300 @@
             </div>
         );
 
-        // --- REGULATORY KNOWLEDGE BASE ---
-        const regulatoryInfo = {
-            "annex xvii": { 
-                category: "restricted", 
-                title: "REACH Annex XVII (Restricted Uses)", 
-                description: "Substance is restricted for specific applications or conditions.", 
-                implication: "CONDITIONAL: Check Annex XVII Col 2. May be banned in consumer goods but allowed in industry.", 
-                paperwork: "Statement of Compliance (SoC) proving use conditions met.", 
-                riskColor: "text-red-700 bg-red-50 border-red-200" 
-            },
-            "pop": { 
-                category: "prohibited", 
-                title: "POPs Regulation (EU 2019/1021)", 
-                description: "Persistent Organic Pollutants. Strict prohibition.", 
-                implication: "BANNED: Often Trace Contaminant limit (UTC) applies (e.g. 10mg/kg).", 
-                paperwork: "Supplier Declaration of Absence.", 
-                riskColor: "text-red-900 bg-red-100 border-red-300" 
-            },
-            "annex xiv": { 
-                category: "warning", 
-                title: "REACH Annex XIV (Authorisation List)", 
-                description: "Use banned after 'Sunset Date' without Authorisation.", 
-                implication: "USE BAN: Cannot use without specific Authorisation number.", 
-                paperwork: "Proof of Authorisation OR Article 33 Declaration.", 
-                riskColor: "text-orange-700 bg-orange-50 border-orange-200" 
-            },
-            "annex vi": { 
-                category: "classification", 
-                title: "CLP Annex VI (Harmonised Classification)", 
-                description: "Legally binding classification (CMR).", 
-                implication: "Ensure SDS and Labels match harmonised classification.", 
-                paperwork: "Up-to-date Safety Data Sheet (SDS).", 
-                riskColor: "text-emerald-700 bg-emerald-50 border-emerald-200" 
-            },
-            "svhc": { 
-                category: "watch", 
-                title: "SVHC Candidate List (Art. 59)", 
-                description: "Candidate substances for Annex XIV.", 
-                implication: "Threshold >0.1% w/w triggers Article 33 & SCIP duties.", 
-                paperwork: "Article 33 Declaration & SCIP Number.", 
-                riskColor: "text-yellow-700 bg-yellow-50 border-yellow-200" 
-            },
-            "pic": { 
-                category: "warning", 
-                title: "PIC Regulation", 
-                description: "Prior Informed Consent for export/import.", 
-                implication: "Export requires notification and RIN.", 
-                paperwork: "Export Notification Number (RIN).", 
-                riskColor: "text-purple-700 bg-purple-50 border-purple-200" 
-            },
-            "annex iv": { 
-                category: "low", 
-                title: "REACH Annex IV (Exemptions)", 
-                description: "Minimum risk substances.", 
-                implication: "EXEMPT: Generally considered safe.", 
-                paperwork: "None (Standard SDS).", 
-                riskColor: "text-green-700 bg-green-50 border-green-200" 
-            }
+        const ToastContainer = ({ toasts, removeToast }) => (
+            <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 toast-container">
+                {toasts.map(toast => (
+                    <div key={toast.id} className={`flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg text-white animate-fade-in ${
+                        toast.type === 'error' ? 'bg-red-600' : 
+                        toast.type === 'success' ? 'bg-green-600' : 'bg-slate-800'
+                    }`}>
+                        {toast.type === 'success' && <Check size={18} />}
+                        {toast.type === 'error' && <XCircle size={18} />}
+                        {toast.type === 'info' && <Info size={18} />}
+                        <span className="text-sm font-medium">{toast.message}</span>
+                        <button onClick={() => removeToast(toast.id)} className="ml-2 hover:opacity-75"><X size={14}/></button>
+                    </div>
+                ))}
+            </div>
+        );
+
+        const SummaryDashboard = ({ results }) => {
+            const stats = useMemo(() => {
+                const s = { total: results.length, prohibited: 0, restricted: 0, warning: 0, watch: 0, safe: 0 };
+                results.forEach(r => {
+                    if (r.riskLevel === 'prohibited') s.prohibited++;
+                    else if (r.riskLevel === 'restricted') s.restricted++;
+                    else if (['warning', 'classification'].includes(r.riskLevel)) s.warning++;
+                    else if (r.riskLevel === 'watch') s.watch++;
+                    else s.safe++;
+                });
+                return s;
+            }, [results]);
+
+            if (results.length === 0) return null;
+
+            return (
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5 mb-6 no-print">
+                    <div className="flex items-center gap-2 mb-4 text-slate-800 font-bold border-b pb-2">
+                        <PieChart size={20} className="text-indigo-600"/> 
+                        Executive Summary
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                        <div className="text-center p-3 bg-slate-50 rounded-lg border border-slate-100">
+                            <div className="text-2xl font-bold text-slate-800">{stats.total}</div>
+                            <div className="text-xs font-bold text-slate-400 uppercase tracking-wide">Total Checked</div>
+                        </div>
+                        <div className={`text-center p-3 rounded-lg border ${stats.prohibited > 0 ? 'bg-red-50 border-red-100' : 'bg-slate-50 border-slate-100 opacity-50'}`}>
+                            <div className={`text-2xl font-bold ${stats.prohibited > 0 ? 'text-red-600' : 'text-slate-400'}`}>{stats.prohibited}</div>
+                            <div className="text-xs font-bold text-slate-500 uppercase tracking-wide">Prohibited</div>
+                        </div>
+                        <div className={`text-center p-3 rounded-lg border ${stats.restricted > 0 ? 'bg-orange-50 border-orange-100' : 'bg-slate-50 border-slate-100 opacity-50'}`}>
+                            <div className={`text-2xl font-bold ${stats.restricted > 0 ? 'text-orange-600' : 'text-slate-400'}`}>{stats.restricted}</div>
+                            <div className="text-xs font-bold text-slate-500 uppercase tracking-wide">Restricted</div>
+                        </div>
+                        <div className={`text-center p-3 rounded-lg border ${stats.watch > 0 ? 'bg-yellow-50 border-yellow-100' : 'bg-slate-50 border-slate-100 opacity-50'}`}>
+                            <div className={`text-2xl font-bold ${stats.watch > 0 ? 'text-yellow-600' : 'text-slate-400'}`}>{stats.watch}</div>
+                            <div className="text-xs font-bold text-slate-500 uppercase tracking-wide">SVHC / Watch</div>
+                        </div>
+                        <div className="text-center p-3 bg-green-50 rounded-lg border border-green-100">
+                            <div className="text-2xl font-bold text-green-600">{stats.safe}</div>
+                            <div className="text-xs font-bold text-green-700 uppercase tracking-wide">Low Risk / OK</div>
+                        </div>
+                    </div>
+                </div>
+            );
         };
 
         const App = () => {
             const [inputText, setInputText] = useState("");
             const [results, setResults] = useState([]);
+            const [filterMode, setFilterMode] = useState("all"); 
             const [dbLoaded, setDbLoaded] = useState(false);
             const [recordCount, setRecordCount] = useState(0);
             const [lastUploadDate, setLastUploadDate] = useState("Never");
             const [lastUploadTimestamp, setLastUploadTimestamp] = useState(0);
             const [isLoading, setIsLoading] = useState(true);
             const [loadingMessage, setLoadingMessage] = useState("");
-            const [activeGuideCategory, setActiveGuideCategory] = useState(null);
             const [toasts, setToasts] = useState([]);
+            const [activeGuide, setActiveGuide] = useState(null);
             const [disclaimerAccepted, setDisclaimerAccepted] = useState(false);
 
-            // --- Toast Logic ---
             const addToast = (message, type = 'info') => {
                 const id = Date.now();
                 setToasts(prev => [...prev, { id, message, type }]);
                 setTimeout(() => removeToast(id), 4000);
             };
 
-            const removeToast = (id) => {
-                setToasts(prev => prev.filter(t => t.id !== id));
-            };
+            const removeToast = (id) => setToasts(prev => prev.filter(t => t.id !== id));
 
-            const isDataOutdated = () => {
-                if (!lastUploadTimestamp) return false;
-                const age = Date.now() - lastUploadTimestamp;
-                return age > SIX_MONTHS_MS;
-            };
-
+            // --- INIT DB ---
             useEffect(() => {
                 const initDB = async () => {
                     try {
                         const dateRecord = await db.settings.get("uploadDate");
-                        const timestampRecord = await db.settings.get("uploadTimestamp");
+                        const timeRecord = await db.settings.get("uploadTimestamp");
                         const count = await db.substances.count();
-                        
                         if (count > 0) {
                             setDbLoaded(true);
                             setRecordCount(count);
                             setLastUploadDate(dateRecord ? dateRecord.value : "Unknown");
-                            setLastUploadTimestamp(timestampRecord ? timestampRecord.value : 0);
+                            setLastUploadTimestamp(timeRecord ? timeRecord.value : 0);
                         }
-                    } catch (err) { 
-                        console.error("DB Load Error", err); 
-                        addToast("Failed to load local database", "error");
-                    } 
+                    } catch (err) { console.error(err); } 
                     finally { setIsLoading(false); }
                 };
                 initDB();
             }, []);
 
-            const normalizeData = (rawData) => {
-                let arr = rawData;
-                if (!Array.isArray(arr) && arr?.data) arr = arr.data;
-                if (Array.isArray(arr)) arr = arr.flat(Infinity);
-                if (!Array.isArray(arr)) return [];
-
-                return arr.map(item => {
-                    const keys = Object.keys(item);
-                    const casKey = keys.find(k => /cas/i.test(k) && !/name/i.test(k)); 
-                    const listKey = keys.find(k => /list|reg/i.test(k));
-                    const nameKey = keys.find(k => /name|substance/i.test(k) && !/list/i.test(k));
-                    const ecKey = keys.find(k => /ec/i.test(k));
-                    const noteKey = keys.find(k => /note|desc/i.test(k));
-                    const limitKey = keys.find(k => /limit|thresh|waarde|val|conc|condition/i.test(k) && !/list|name|cas/i.test(k));
-
-                    const rawCas = item[casKey] || item["CAS No"] || item["CAS Number"] || "";
-                    
-                    return {
-                        casOriginal: rawCas,
-                        cas: String(rawCas).replace(/[\s\u00A0]/g, "").toLowerCase(),
-                        listId: item[listKey] || item["List Name"] || "Unknown List",
-                        name: item[nameKey] || item["Substance Name"] || "Unknown Name",
-                        ec: item[ecKey] || "",
-                        note: item[noteKey] || "",
-                        limit: limitKey ? item[limitKey] : ""
-                    };
-                }).filter(item => item.cas && item.cas.length > 3);
+            // --- STATUS COLOR LOGIC ---
+            const isDataOutdated = () => {
+                if (!lastUploadTimestamp) return false; 
+                return (Date.now() - lastUploadTimestamp) > SIX_MONTHS_MS;
             };
 
+            const getDbStatusColor = () => {
+                if (!dbLoaded) return "bg-slate-50 border-slate-200 text-slate-400";
+                if (isDataOutdated()) return "bg-red-50 border-red-200 text-red-700"; // Outdated > 6 months
+                return "bg-green-50 border-green-200 text-green-700"; // Fresh < 6 months
+            };
+
+            // --- FILE UPLOAD ---
             const handleFileUpload = (event) => {
                 const file = event.target.files[0];
                 if (!file) return;
                 setIsLoading(true);
-                setLoadingMessage("Reading file...");
+                setLoadingMessage("Parsing large dataset...");
 
                 const reader = new FileReader();
                 reader.onload = async (e) => {
                     try {
-                        setLoadingMessage("Parsing JSON...");
-                        let json;
-                        try {
-                            json = JSON.parse(e.target.result);
-                        } catch (parseError) {
-                            throw new Error("Invalid JSON file format");
-                        }
-
-                        setLoadingMessage("Normalizing data & extracting Limits...");
-                        const normalized = normalizeData(json);
+                        const json = JSON.parse(e.target.result);
+                        let arr = Array.isArray(json) ? json : (json.data || []);
+                        if(Array.isArray(arr)) arr = arr.flat(Infinity);
                         
-                        if(normalized.length === 0) throw new Error("No valid substance data found in file");
+                        const normalized = arr.map(item => {
+                            const keys = Object.keys(item);
+                            const casKey = keys.find(k => /cas/i.test(k));
+                            const nameKey = keys.find(k => /name|substance/i.test(k) && !/list/i.test(k));
+                            const ecKey = keys.find(k => /ec/i.test(k));
+                            const listKey = keys.find(k => /list|reg/i.test(k));
+                            const limitKey = keys.find(k => /limit|val|conc/i.test(k));
+                            const noteKey = keys.find(k => /note|desc/i.test(k));
 
-                        setLoadingMessage("Indexing database (this may take a moment)...");
+                            return {
+                                cas: String(item[casKey] || "").trim().toLowerCase(),
+                                name: String(item[nameKey] || "Unknown").trim(),
+                                ec: String(item[ecKey] || "").trim().toLowerCase(),
+                                listId: item[listKey] || "Unknown List",
+                                limit: limitKey ? item[limitKey] : "",
+                                note: noteKey ? item[noteKey] : ""
+                            };
+                        }).filter(i => i.cas.length > 3 || i.name.length > 2);
+
+                        setLoadingMessage(`Indexing ${normalized.length} records...`);
                         await db.substances.clear();
                         await db.substances.bulkAdd(normalized);
-
+                        
                         const dateStr = new Date().toLocaleDateString();
                         const timestamp = Date.now();
-                        
+
                         await db.settings.put({ id: "uploadDate", value: dateStr });
                         await db.settings.put({ id: "uploadTimestamp", value: timestamp });
-                        
+
                         setRecordCount(normalized.length);
                         setLastUploadDate(dateStr);
                         setLastUploadTimestamp(timestamp);
                         setDbLoaded(true);
-                        
                         addToast(`Database updated with ${normalized.length} records!`, "success");
-                    } catch (err) { 
-                        addToast(err.message, "error"); 
-                    } 
+                    } catch (err) { addToast("File parse error: " + err.message, "error"); } 
                     finally { setIsLoading(false); setLoadingMessage(""); }
                 };
                 reader.readAsText(file);
             };
 
-            const clearDatabase = async () => {
-                if(confirm("Are you sure you want to delete the local database? This cannot be undone.")) {
-                    await db.substances.clear();
-                    await db.settings.clear();
-                    setDbLoaded(false);
-                    setRecordCount(0);
-                    setResults([]);
-                    setLastUploadDate("Never");
-                    addToast("Database cleared", "info");
-                }
-            }
-
-            const getRegInfo = (listId) => {
-                const id = String(listId || "").toLowerCase();
-                if (id.includes("annex iv")) return regulatoryInfo["annex iv"];
-                if (id.includes("annex xvii") || id.includes("restriction")) return regulatoryInfo["annex xvii"];
-                if (id.includes("annex xiv") || id.includes("authorisation")) return regulatoryInfo["annex xiv"];
-                if (id.includes("pop")) return regulatoryInfo["pop"];
-                if (id.includes("pic")) return regulatoryInfo["pic"];
-                if (id.includes("svhc") || id.includes("candidate")) return regulatoryInfo["svhc"];
-                if (id.includes("annex vi")) return regulatoryInfo["annex vi"];
-                return null; 
-            };
-
-            const determineRisk = (listId) => {
-                const lowerList = String(listId || "").toLowerCase();
-                if (lowerList.includes("pop")) return { level: "prohibited", action: "BANNED", desc: "Prohibited" };
-                if (lowerList.includes("annex xvii") || lowerList.includes("restriction")) return { level: "restricted", action: "RESTRICTED", desc: "Conditional Restriction" };
-                if (lowerList.includes("authorisation") || lowerList.includes("annex xiv")) return { level: "warning", action: "CHECK DUTIES", desc: "Authorisation / CMR Hazard" };
-                if (lowerList.includes("svhc") || lowerList.includes("candidate")) return { level: "watch", action: "WATCH LIST", desc: "SVHC Candidate" };
-                if (lowerList.includes("annex vi")) return { level: "classification", action: "HARMONISED (CLP)", desc: "Harmonised Classification" };
-                if (lowerList.includes("annex iv")) return { level: "low", action: "EXEMPT", desc: "Exempt" };
-                return { level: "unknown", action: "UNKNOWN", desc: `Listed in: ${listId}` };
-            };
-
-            // --- CSV EXPORT FUNCTION ---
-            const exportCSV = () => {
-                if (!results || results.length === 0) return;
-
-                const headers = ["CAS Input", "Substance Name", "Status", "Risk Level", "Lists Found", "List Details"];
-                
-                // Construct CSV rows
-                const rows = results.map(r => {
-                    const lists = r.entries.map(e => e.listId).join('; ');
-                    const details = r.entries.map(e => `${e.listId}: ${e.limit || 'No specific limit'}`).join(' | ');
-                    
-                    // Escape quotes and wrap in quotes for CSV safety
-                    const safeName = `"${(r.name || "").replace(/"/g, '""')}"`;
-                    const safeDetails = `"${details.replace(/"/g, '""')}"`;
-
-                    return [
-                        r.cas, 
-                        safeName, 
-                        r.action, 
-                        r.riskLevel, 
-                        `"${lists}"`, 
-                        safeDetails
-                    ].join(",");
-                });
-
-                const csvContent = [headers.join(","), ...rows].join("\n");
-                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-                const url = URL.createObjectURL(blob);
-                
-                // Trigger download
-                const link = document.createElement("a");
-                link.setAttribute("href", url);
-                link.setAttribute("download", `Compliance_Report_${new Date().toISOString().split('T')[0]}.csv`);
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-            };
-
+            // --- SEARCH LOGIC ---
             const handleSearch = async () => {
-                if (!inputText.trim()) {
-                    addToast("Please enter at least one CAS number", "error");
-                    return;
-                }
+                if (!inputText.trim()) return;
                 setIsLoading(true);
-                setLoadingMessage("Scanning database...");
+                setLoadingMessage("Searching database...");
+                setFilterMode("all"); 
 
                 try {
-                    const rawQueries = inputText.split(/[\n,;]+/).map(q => q.trim()).filter(q => q);
-                    const cleanQueries = rawQueries.map(q => String(q).replace(/[\s\u00A0]/g, "").toLowerCase());
+                    // Delimiters: Newline, Comma, Semicolon, Colon, Space
+                    const queries = inputText.split(/[\n,;:\s]+/).map(q => q.trim()).filter(q => q);
+                    const resultsArray = [];
 
-                    const dbMatches = await db.substances.where('cas').anyOf(cleanQueries).toArray();
+                    for (const query of queries) {
+                        const type = detectInputType(query);
+                        let matches = [];
 
-                    const processedResults = rawQueries.map(originalQuery => {
-                        const cleanQ = String(originalQuery).replace(/[\s\u00A0]/g, "").toLowerCase();
-                        
-                        // CAS VALIDATION CHECK
-                        if (!validateCAS(cleanQ)) {
-                            return {
-                                cas: originalQuery,
-                                name: "Invalid CAS Checksum",
-                                entries: [],
-                                riskLevel: "error",
-                                action: "INVALID FORMAT",
-                                found: false
-                            };
+                        if (type === 'CAS') {
+                            const clean = query.replace(/[^\d-]/g, ""); 
+                            matches = await db.substances.filter(s => s.cas === clean || s.cas === clean.replace(/-/g, "")).toArray();
+                        } else if (type === 'EC') {
+                            matches = await db.substances.where('ec').equals(query).toArray();
+                        } else {
+                            matches = await db.substances.filter(s => s.name.toLowerCase().includes(query.toLowerCase())).toArray();
                         }
-
-                        const matches = dbMatches.filter(m => m.cas === cleanQ);
 
                         if (matches.length > 0) {
-                            const entries = matches.map(m => ({ ...m, ...determineRisk(m.listId) }));
-                            const uniqueMap = new Map();
-                            entries.forEach(e => uniqueMap.set(e.listId.toLowerCase(), e));
-                            
-                            const uniqueEntries = Array.from(uniqueMap.values()).sort((a,b) => (
-                                {prohibited:6, restricted: 5, warning:4, watch:3, classification:2, low:1, unknown:0}[b.level] - 
-                                {prohibited:6, restricted: 5, warning:4, watch:3, classification:2, low:1, unknown:0}[a.level]
-                            ));
+                            const entries = matches.map(m => {
+                                const lowerList = String(m.listId).toLowerCase();
+                                let risk = { level: "unknown", action: "LISTED" };
+                                if (lowerList.includes("pop")) risk = { level: "prohibited", action: "BANNED" };
+                                else if (lowerList.includes("annex xvii")) risk = { level: "restricted", action: "RESTRICTED" };
+                                else if (lowerList.includes("annex xiv")) risk = { level: "warning", action: "AUTHORISATION" };
+                                else if (lowerList.includes("svhc")) risk = { level: "watch", action: "SVHC CANDIDATE" };
+                                else if (lowerList.includes("annex vi")) risk = { level: "classification", action: "CLP HAZARD" };
+                                else if (lowerList.includes("annex iv")) risk = { level: "low", action: "EXEMPT" };
+                                return { ...m, ...risk };
+                            });
 
-                            return { 
-                                cas: originalQuery, 
-                                name: uniqueEntries[0].name, 
-                                entries: uniqueEntries, 
-                                riskLevel: uniqueEntries[0].level, 
-                                action: uniqueEntries[0].action, 
-                                found: true 
-                            };
+                            entries.sort((a,b) => {
+                                const priority = { prohibited:6, restricted:5, warning:4, watch:3, classification:2, low:1, unknown:0 };
+                                return priority[b.level] - priority[a.level];
+                            });
+
+                            const primary = entries[0];
+                            resultsArray.push({
+                                query,
+                                matchedName: primary.name,
+                                type,
+                                entries,
+                                riskLevel: primary.level,
+                                action: primary.action,
+                                found: true
+                            });
+                        } else {
+                            let risk = "low"; 
+                            let action = "NO MATCH";
+                            if (type === 'CAS' && !validateCAS(query)) {
+                                risk = "error";
+                                action = "INVALID CAS";
+                            }
+                            resultsArray.push({ query, matchedName: "No Match", type, entries: [], riskLevel: risk, action, found: false });
                         }
-                        return { cas: originalQuery, name: "No Match Found", entries: [], riskLevel: "unknown", action: "NOT LISTED", found: false };
-                    });
-                    
-                    setResults(processedResults);
-                    addToast(`Check complete. ${processedResults.filter(r => r.found).length} substances found.`, "success");
-                } catch (e) { 
-                    console.error(e); 
-                    addToast("An error occurred during search", "error"); 
-                } 
-                finally { setIsLoading(false); setLoadingMessage(""); }
+                    }
+                    setResults(resultsArray);
+                } catch (e) { console.error(e); addToast("Search failed", "error"); } 
+                finally { setIsLoading(false); }
             };
-            
-            const handleKeyDown = (e) => { if (e.key === 'Enter') handleSearch(); };
-            
+
+            const handleKeyDown = (e) => {
+                if (e.key === 'Enter') handleSearch();
+            };
+
+            const getFilteredResults = () => {
+                if (filterMode === 'all') return results;
+                if (filterMode === 'issues') return results.filter(r => ['prohibited', 'restricted', 'warning'].includes(r.riskLevel));
+                if (filterMode === 'watch') return results.filter(r => r.riskLevel === 'watch');
+                if (filterMode === 'clean') return results.filter(r => ['low', 'unknown'].includes(r.riskLevel) && r.action !== 'INVALID CAS');
+                return results;
+            };
+
             const getStatusStyles = (level) => {
                 switch(level) {
-                    case 'prohibited': return { card: 'border-red-600', flag: 'bg-red-600 text-white', badge: 'bg-red-50 text-red-700', icon: <Ban className="text-red-600" /> };
-                    case 'restricted': return { card: 'border-red-500', flag: 'bg-red-100 text-red-800', badge: 'bg-red-50 text-red-700', icon: <AlertOctagon className="text-red-500" /> };
-                    case 'warning': return { card: 'border-orange-500', flag: 'bg-orange-500 text-white', badge: 'bg-orange-50 text-orange-800', icon: <AlertTriangle className="text-orange-600" /> };
-                    case 'watch': return { card: 'border-yellow-400', flag: 'bg-yellow-400 text-black', badge: 'bg-yellow-50 text-yellow-800', icon: <Users className="text-yellow-600" /> };
-                    case 'classification': return { card: 'border-emerald-500', flag: 'bg-emerald-500 text-white', badge: 'bg-emerald-50 text-emerald-700', icon: <Activity className="text-emerald-600" /> };
-                    case 'low': return { card: 'border-green-500', flag: 'bg-green-500 text-white', badge: 'bg-green-50 text-green-700', icon: <CheckCircle className="text-green-600" /> };
-                    case 'error': return { card: 'border-slate-400 border-dashed', flag: 'bg-slate-600 text-white', badge: 'bg-slate-100 text-slate-800', icon: <XCircle className="text-slate-400" /> };
-                    default: return { card: 'border-slate-300', flag: 'bg-slate-500 text-white', badge: 'bg-slate-100', icon: <Info className="text-slate-400" /> };
+                    case 'prohibited': return { card: 'border-red-600', badge: 'bg-red-600 text-white', icon: <Ban className="text-red-600" /> };
+                    case 'restricted': return { card: 'border-orange-500', badge: 'bg-orange-100 text-orange-800', icon: <AlertOctagon className="text-orange-500" /> };
+                    case 'warning': return { card: 'border-orange-400', badge: 'bg-orange-500 text-white', icon: <AlertTriangle className="text-orange-500" /> };
+                    case 'watch': return { card: 'border-yellow-400', badge: 'bg-yellow-100 text-yellow-800', icon: <Users className="text-yellow-600" /> };
+                    case 'classification': return { card: 'border-emerald-500', badge: 'bg-emerald-100 text-emerald-800', icon: <Activity className="text-emerald-600" /> };
+                    case 'low': return { card: 'border-green-500', badge: 'bg-green-100 text-green-800', icon: <CheckCircle className="text-green-600" /> };
+                    case 'error': return { card: 'border-slate-300 border-dashed', badge: 'bg-slate-200 text-slate-600', icon: <XCircle className="text-slate-400" /> };
+                    default: return { card: 'border-slate-200', badge: 'bg-slate-100 text-slate-500', icon: <Info className="text-slate-400" /> };
                 }
             };
 
-            const getGuideTitle = () => {
-                if(activeGuideCategory === 'prohibited') return "Prohibited (Red)";
-                if(activeGuideCategory === 'restricted') return "Restricted / Conditional (Red)";
-                if(activeGuideCategory === 'warning') return "Authorisation & Hazards (Orange)";
-                if(activeGuideCategory === 'watch') return "SVHC Watch List (Yellow)";
-                if(activeGuideCategory === 'classification') return "Harmonised (CLP) (Green)";
-                return "Exemptions (Green)";
-            }
-
             if (isLoading) return (
-                <div className="min-h-screen flex flex-col items-center justify-center text-slate-500 font-sans bg-slate-50">
+                <div className="min-h-screen flex flex-col items-center justify-center bg-slate-50">
                     <Loader2 className="w-10 h-10 animate-spin text-indigo-600 mb-4" />
-                    <h2 className="text-xl font-bold text-slate-700">{loadingMessage || "Loading System..."}</h2>
-                    <p className="text-sm mt-2">Processing large dataset via IndexedDB</p>
+                    <h2 className="text-xl font-bold text-slate-700">{loadingMessage || "Processing..."}</h2>
                 </div>
             );
 
             return (
                 <div className="min-h-screen bg-slate-50 font-sans text-slate-900 flex flex-col">
-                    {!disclaimerAccepted && <DisclaimerModal onAccept={() => setDisclaimerAccepted(true)} />}
                     <ToastContainer toasts={toasts} removeToast={removeToast} />
                     
-                    <nav className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm print:hidden">
-                        <div className="max-w-7xl mx-auto px-4 h-16 flex justify-between items-center">
-                            <div className="flex items-center gap-2">
-                                <ShieldCheck className="text-indigo-600 w-8 h-8" />
-                                <div>
-                                    <h1 className="text-xl font-bold text-slate-900">ChemChecker <span className="text-indigo-600">Pro</span></h1>
-                                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Compliance Screening Tool</p>
-                                </div>
-                            </div>
-                            <div className="flex items-center gap-4 no-print">
-                                <div className="hidden md:flex gap-2">
-                                    <button onClick={() => setActiveGuideCategory('restricted')} className="px-2 py-1 rounded bg-red-100 text-red-700 text-xs font-bold hover:bg-red-200 border border-red-200 transition">Restricted</button>
-                                    <button onClick={() => setActiveGuideCategory('warning')} className="px-2 py-1 rounded bg-orange-100 text-orange-700 text-xs font-bold hover:bg-orange-200 border border-orange-200 transition">Auth/Haz</button>
-                                    <button onClick={() => setActiveGuideCategory('watch')} className="px-2 py-1 rounded bg-yellow-100 text-yellow-700 text-xs font-bold hover:bg-yellow-200 border border-yellow-200 transition">SVHC</button>
-                                    <button onClick={() => setActiveGuideCategory('classification')} className="px-2 py-1 rounded bg-emerald-100 text-emerald-700 text-xs font-bold hover:bg-emerald-200 border border-emerald-200 transition">CLP</button>
-                                </div>
-                                <div className="h-6 w-px bg-slate-200"></div>
-                                <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border ${isDataOutdated() ? 'bg-amber-50 border-amber-300' : 'bg-slate-100 border-slate-200'}`}>
-                                    <Database size={16} className={dbLoaded ? (isDataOutdated() ? "text-amber-500" : "text-green-600") : "text-slate-400"} />
-                                    <div className="text-xs">
-                                        <span className="block font-bold text-slate-700">{dbLoaded ? `${recordCount.toLocaleString()} Records` : "No Data"}</span>
-                                        <span className={`block text-[10px] ${isDataOutdated() ? "text-amber-700 font-bold" : "text-slate-500"}`}>
-                                            Date: {lastUploadDate} {isDataOutdated() && "⚠️ OLD"}
-                                        </span>
-                                    </div>
-                                    {dbLoaded && <button onClick={clearDatabase} className="ml-2 text-slate-400 hover:text-red-600 transition"><Trash2 size={16} /></button>}
-                                </div>
-                            </div>
-                        </div>
-                    </nav>
+                    {/* RESTORED DISCLAIMER MODAL */}
+                    {!disclaimerAccepted && <DisclaimerModal onAccept={() => setDisclaimerAccepted(true)} />}
 
-                    {/* Guide Modal */}
-                    {activeGuideCategory && (
-                        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm no-print" onClick={() => setActiveGuideCategory(null)}>
-                            <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full p-6 animate-fade-in" onClick={e => e.stopPropagation()}>
-                                <div className="flex justify-between items-center mb-6 border-b pb-4">
-                                    <h3 className="text-xl font-bold flex items-center gap-2 text-slate-800"><BookOpen size={24} className="text-indigo-600"/> {getGuideTitle()}</h3>
-                                    <button onClick={() => setActiveGuideCategory(null)}><X size={24} className="text-slate-400 hover:text-red-500 transition-colors"/></button>
+                    {/* GUIDE POPUP MODAL */}
+                    {activeGuide && (
+                        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setActiveGuide(null)}>
+                            <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full p-6" onClick={e => e.stopPropagation()}>
+                                <div className="flex justify-between items-center mb-4 border-b pb-4">
+                                    <h3 className="text-xl font-bold flex items-center gap-2"><BookOpen size={20} className="text-indigo-600"/> Regulatory Guide</h3>
+                                    <button onClick={() => setActiveGuide(null)}><X size={20} className="text-slate-400 hover:text-red-500"/></button>
                                 </div>
-                                <div className="space-y-6 max-h-[65vh] overflow-y-auto pr-2 custom-scrollbar">
-                                    {Object.entries(regulatoryInfo).filter(([k, i]) => i.category === activeGuideCategory).map(([k, info]) => (
-                                        <div key={k} className={`p-5 rounded-lg border border-l-4 ${info.riskColor} bg-opacity-10 shadow-sm`}>
-                                            <div className="flex items-center gap-2 mb-2">
-                                                <h4 className="font-bold text-base uppercase tracking-wide text-slate-900">{info.title}</h4>
-                                            </div>
-                                            <p className="text-sm text-slate-700 leading-relaxed mb-4">{info.description}</p>
-                                            <div className="grid md:grid-cols-2 gap-4">
-                                                <div className="bg-white p-3 rounded border border-indigo-100 shadow-sm">
-                                                    <div className="flex items-center gap-2 mb-1 text-indigo-700 font-bold text-xs uppercase tracking-wider">
-                                                        <ClipboardCheck size={14} /> ⚖️ Legal Duty
-                                                    </div>
-                                                    <p className="text-xs text-slate-600 leading-snug">{info.implication}</p>
-                                                </div>
-                                                <div className="bg-white p-3 rounded border border-slate-200 shadow-sm">
-                                                    <div className="flex items-center gap-2 mb-1 text-slate-700 font-bold text-xs uppercase tracking-wider">
-                                                        <FileText size={14} /> 📄 Paperwork
-                                                    </div>
-                                                    <p className="text-xs text-slate-600 leading-snug">{info.paperwork}</p>
-                                                </div>
+                                <div className="space-y-4 max-h-[60vh] overflow-y-auto custom-scrollbar pr-2">
+                                    {Object.entries(regulatoryInfo).filter(([key, info]) => info.category === activeGuide).map(([key, info]) => (
+                                        <div key={key} className={`p-4 rounded-lg border-l-4 ${info.riskColor} bg-opacity-20`}>
+                                            <h4 className="font-bold uppercase text-sm mb-1">{info.title}</h4>
+                                            <p className="text-sm text-slate-700 mb-3">{info.description}</p>
+                                            <div className="grid gap-2">
+                                                <div className="bg-white p-2 rounded text-xs border border-indigo-100"><span className="font-bold text-indigo-600">Legal:</span> {info.implication}</div>
+                                                <div className="bg-white p-2 rounded text-xs border border-slate-200"><span className="font-bold text-slate-600">Docs:</span> {info.paperwork}</div>
                                             </div>
                                         </div>
                                     ))}
@@ -549,144 +408,153 @@
                         </div>
                     )}
 
-                    <main className="flex-grow max-w-7xl w-full mx-auto px-4 py-8 space-y-8">
-                        {isDataOutdated() && dbLoaded && (
-                            <div className="bg-amber-50 border-l-4 border-amber-500 p-4 rounded-r-lg shadow-sm flex items-start gap-3 no-print">
-                                <CalendarClock className="text-amber-600 flex-shrink-0" />
-                                <div>
-                                    <h3 className="font-bold text-amber-800">Database Outdated</h3>
-                                    <p className="text-sm text-amber-700">Your regulatory data was uploaded over 6 months ago. REACH lists (SVHC, Annex XVII) change frequently. Please upload a new JSON export to ensure accurate screening.</p>
+                    {/* NAV */}
+                    <nav className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm print:hidden">
+                        <div className="max-w-7xl mx-auto px-4 h-16 flex justify-between items-center">
+                            <div className="flex items-center gap-2">
+                                <ShieldCheck className="text-indigo-600 w-8 h-8" />
+                                <div><h1 className="text-xl font-bold text-slate-900">ChemChecker <span className="text-indigo-600">Pro</span></h1></div>
+                            </div>
+                            
+                            <div className="flex items-center gap-4">
+                                <div className="hidden md:flex gap-2">
+                                    <button onClick={() => setActiveGuide('restricted')} className="px-3 py-1.5 rounded-md bg-red-100 text-red-700 text-xs font-bold hover:bg-red-200 border border-red-200 transition">Restricted</button>
+                                    <button onClick={() => setActiveGuide('warning')} className="px-3 py-1.5 rounded-md bg-orange-100 text-orange-700 text-xs font-bold hover:bg-orange-200 border border-orange-200 transition">Auth/Haz</button>
+                                    <button onClick={() => setActiveGuide('watch')} className="px-3 py-1.5 rounded-md bg-yellow-100 text-yellow-700 text-xs font-bold hover:bg-yellow-200 border border-yellow-200 transition">SVHC</button>
+                                    <button onClick={() => setActiveGuide('classification')} className="px-3 py-1.5 rounded-md bg-emerald-100 text-emerald-700 text-xs font-bold hover:bg-emerald-200 border border-emerald-200 transition">Harmonised (CLP)</button>
+                                </div>
+                                <div className="h-6 w-px bg-slate-200 hidden md:block"></div>
+                                
+                                {/* RECORDS BOX - DYNAMIC COLORS */}
+                                <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-colors ${getDbStatusColor()}`}>
+                                    <Database size={16} />
+                                    <div className="text-xs">
+                                        <span className="block font-bold">{dbLoaded ? `${recordCount.toLocaleString()} Records` : "No Data"}</span>
+                                        {dbLoaded && isDataOutdated() && <span className="text-[10px] font-bold block animate-pulse">⚠️ OUTDATED</span>}
+                                    </div>
+                                    {dbLoaded && <button onClick={async () => { if(confirm("Clear DB?")) { await db.substances.clear(); setDbLoaded(false); }}} className="ml-2 hover:opacity-75"><Trash2 size={14} /></button>}
                                 </div>
                             </div>
-                        )}
+                        </div>
+                    </nav>
 
+                    <main className="max-w-5xl mx-auto w-full px-4 py-8 space-y-8 flex-grow">
+                        {/* UPLOAD SCREEN */}
                         {!dbLoaded && (
-                            <div className="max-w-xl mx-auto text-center border-2 border-dashed border-slate-300 rounded-xl p-10 bg-white no-print shadow-sm hover:border-indigo-400 transition-colors">
-                                <div className="bg-indigo-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"><HardDrive className="text-indigo-600 w-8 h-8" /></div>
-                                <h2 className="text-xl font-bold text-slate-800">Initialize Screening Database</h2>
-                                <p className="text-sm text-slate-500 mt-2 mb-6">Upload your massive JSON file. Data is indexed locally for instant search.</p>
-                                <label className="cursor-pointer bg-indigo-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-indigo-700 transition shadow-lg inline-flex items-center gap-2 active:transform active:scale-95">
-                                    <Upload size={18} /> Select Database File
-                                    <input type="file" accept=".json" onChange={handleFileUpload} className="hidden" />
+                            <div className="text-center border-2 border-dashed border-slate-300 rounded-xl p-12 bg-white shadow-sm">
+                                <div className="bg-indigo-50 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4"><Upload className="text-indigo-600 w-8 h-8" /></div>
+                                <h2 className="text-2xl font-bold text-slate-800">Initialize Database</h2>
+                                <p className="text-slate-500 mt-2 mb-6">Upload your JSON compliance data file to begin.</p>
+                                <label className="cursor-pointer bg-indigo-600 text-white px-6 py-3 rounded-lg font-bold hover:bg-indigo-700 transition inline-flex items-center gap-2">
+                                    Select File <input type="file" accept=".json" onChange={handleFileUpload} className="hidden" />
                                 </label>
                             </div>
                         )}
 
+                        {/* SEARCH INTERFACE */}
                         {dbLoaded && (
                             <>
-                                <section className="max-w-4xl mx-auto no-print">
-                                    <div className="bg-white rounded-2xl shadow-lg border border-slate-100 overflow-hidden">
-                                        <div className="p-1 bg-gradient-to-r from-indigo-500 to-purple-600"></div>
-                                        <div className="p-6">
-                                            <label className="block font-semibold text-slate-700 mb-2">Quick Screen</label>
-                                            <div className="relative">
-                                                <input 
-                                                    type="text"
-                                                    className="w-full p-4 pr-12 border border-slate-200 bg-slate-50 rounded-xl text-slate-700 placeholder-slate-400 focus:ring-2 focus:ring-indigo-500 focus:bg-white transition-all font-mono text-sm shadow-inner"
-                                                    placeholder="Paste CAS numbers (e.g., 67-64-1, 50-00-0)"
-                                                    value={inputText}
-                                                    onChange={(e) => setInputText(e.target.value)}
-                                                    onKeyDown={handleKeyDown}
-                                                />
-                                                <button onClick={() => {setInputText(""); setResults([]);}} className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1"><Eraser size={18} /></button>
-                                            </div>
-                                            <div className="mt-4 flex justify-end">
-                                                <button onClick={handleSearch} className="bg-indigo-600 text-white px-6 py-2.5 rounded-lg font-bold shadow-md hover:bg-indigo-700 flex items-center gap-2 active:transform active:scale-95 transition">
-                                                    <Search size={18} /> Run Check
+                                <section className="bg-white rounded-2xl shadow-lg border border-slate-100 overflow-hidden no-print">
+                                    <div className="p-1 bg-gradient-to-r from-indigo-500 to-purple-600"></div>
+                                    <div className="p-6">
+                                        <label className="block font-semibold text-slate-700 mb-2">Smart Search</label>
+                                        <div className="relative">
+                                            <input 
+                                                type="text"
+                                                className="w-full p-4 pr-12 border border-slate-200 bg-slate-50 rounded-xl text-slate-700 placeholder-slate-400 focus:ring-2 focus:ring-indigo-500 font-mono text-sm shadow-inner"
+                                                placeholder="e.g. 50-00-0, 200-001-8; Formaldehyde (separate by comma, space or semicolon)"
+                                                value={inputText}
+                                                onChange={(e) => setInputText(e.target.value)}
+                                                onKeyDown={handleKeyDown}
+                                            />
+                                            {inputText && (
+                                                <button onClick={() => {setInputText(""); setResults([]);}} className="absolute right-3 top-1/2 transform -translate-y-1/2 text-slate-400 hover:text-red-500 p-1">
+                                                    <Eraser size={18} />
                                                 </button>
-                                            </div>
+                                            )}
+                                        </div>
+                                        <div className="mt-4 flex justify-between items-center">
+                                            <p className="text-xs text-slate-400">Supports: CAS, EC, Names (Separators: space , ; :)</p>
+                                            <button onClick={handleSearch} className="bg-indigo-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-indigo-700 flex items-center gap-2 shadow-md">
+                                                <Search size={18} /> Check Compliance
+                                            </button>
                                         </div>
                                     </div>
                                 </section>
 
+                                {/* RESULTS AREA */}
                                 {results.length > 0 && (
-                                    <section className="print:w-full">
-                                        <div className="flex justify-between items-end border-b pb-4 mb-6">
-                                            <div>
-                                                <h2 className="text-2xl font-bold text-slate-800">Screening Report</h2>
-                                                <p className="text-slate-500 text-sm">Generated on {new Date().toLocaleDateString()}</p>
-                                            </div>
-                                            <div className="flex gap-2 no-print">
-                                                <button onClick={exportCSV} className="bg-green-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-green-700 flex items-center gap-2 transition shadow-sm">
-                                                    <FileSpreadsheet size={18} /> Export CSV
-                                                </button>
-                                                <button onClick={() => window.print()} className="bg-slate-100 text-slate-700 px-4 py-2 rounded-lg font-medium hover:bg-slate-200 flex items-center gap-2 transition">
-                                                    <FileText size={18} /> Print PDF
-                                                </button>
-                                            </div>
+                                    <section>
+                                        <SummaryDashboard results={results} />
+
+                                        {/* FILTER BAR */}
+                                        <div className="flex flex-wrap gap-2 mb-6 filter-bar no-print">
+                                            <button onClick={() => setFilterMode('all')} className={`px-4 py-2 rounded-full text-sm font-bold border transition ${filterMode === 'all' ? 'bg-slate-800 text-white border-slate-800' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
+                                                Show All ({results.length})
+                                            </button>
+                                            <button onClick={() => setFilterMode('issues')} className={`px-4 py-2 rounded-full text-sm font-bold border transition ${filterMode === 'issues' ? 'bg-red-600 text-white border-red-600' : 'bg-white text-red-600 border-red-100 hover:bg-red-50'}`}>
+                                                Restricted / Banned
+                                            </button>
+                                            <button onClick={() => setFilterMode('watch')} className={`px-4 py-2 rounded-full text-sm font-bold border transition ${filterMode === 'watch' ? 'bg-yellow-500 text-white border-yellow-500' : 'bg-white text-yellow-600 border-yellow-100 hover:bg-yellow-50'}`}>
+                                                SVHC Candidates
+                                            </button>
+                                            <button onClick={() => setFilterMode('clean')} className={`px-4 py-2 rounded-full text-sm font-bold border transition ${filterMode === 'clean' ? 'bg-green-600 text-white border-green-600' : 'bg-white text-green-600 border-green-100 hover:bg-green-50'}`}>
+                                                Clean / No Match
+                                            </button>
                                         </div>
 
-                                        <div className="grid gap-6">
-                                            {results.map((item, idx) => {
+                                        <div className="grid gap-4">
+                                            {getFilteredResults().map((item, idx) => {
                                                 const styles = getStatusStyles(item.riskLevel);
                                                 return (
                                                     <div key={idx} className={`bg-white rounded-xl shadow-sm border-l-8 ${styles.card} overflow-hidden print-break-inside`}>
                                                         <div className="flex">
-                                                            <div className={`w-12 flex items-center justify-center bg-slate-50 print:bg-white print:border-r`}>
+                                                            <div className="w-14 flex items-center justify-center bg-slate-50 border-r border-slate-100">
                                                                 {styles.icon}
                                                             </div>
                                                             <div className="p-4 flex-grow">
                                                                 <div className="flex justify-between items-start">
                                                                     <div>
-                                                                        <h3 className="text-lg font-bold font-mono text-slate-900">{item.cas}</h3>
-                                                                        <p className="text-sm text-slate-600 font-medium">{item.name}</p>
+                                                                        <div className="flex items-center gap-2">
+                                                                            <span className="font-mono text-lg font-bold text-slate-900">{item.query}</span>
+                                                                            {item.type !== 'CAS' && <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 rounded uppercase tracking-wider">{item.type} Match</span>}
+                                                                        </div>
+                                                                        <p className="text-sm text-slate-600 font-medium">{item.matchedName}</p>
                                                                     </div>
-                                                                    <span className={`px-3 py-1 rounded text-xs font-bold uppercase ${styles.badge} ${styles.flag}`}>
-                                                                        {item.action}
-                                                                    </span>
+                                                                    <div className="text-right">
+                                                                         <span className={`px-3 py-1 rounded text-xs font-bold uppercase ${styles.badge}`}>
+                                                                            {item.action}
+                                                                        </span>
+                                                                        {item.found && (
+                                                                             <a href={`https://echa.europa.eu/advanced-search-for-chemicals?p_p_id=disselinventories_WAR_disselinventoriesportlet&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view&_disselinventories_WAR_disselinventoriesportlet_param_cas=${item.entries[0]?.cas || ''}`} 
+                                                                                target="_blank" 
+                                                                                className="flex items-center justify-end gap-1 text-[10px] text-indigo-600 hover:underline mt-1 no-print">
+                                                                                View ECHA <ExternalLink size={10}/>
+                                                                             </a>
+                                                                        )}
+                                                                    </div>
                                                                 </div>
                                                                 
-                                                                {item.found && (
-                                                                    <div className="mt-3 border-t pt-3">
-                                                                        <table className="w-full text-sm text-left">
-                                                                            <thead className="bg-slate-50 text-slate-500 font-medium">
-                                                                                <tr>
-                                                                                    <th className="px-4 py-2 w-1/4">Regulatory List</th>
-                                                                                    <th className="px-4 py-2 w-1/4">Limit / Condition</th>
-                                                                                    <th className="px-4 py-2">Obligations / Notes</th>
-                                                                                </tr>
-                                                                            </thead>
-                                                                            <tbody className="divide-y divide-slate-50">
-                                                                                {item.entries.map((entry, eIdx) => {
-                                                                                    const regData = getRegInfo(entry.listId);
-                                                                                    return (
-                                                                                        <tr key={eIdx}>
-                                                                                            <td className="px-4 py-2.5 font-medium text-slate-700 capitalize">
-                                                                                                {entry.listId}
-                                                                                                <span className="block text-[10px] text-slate-400 font-mono mt-0.5">{entry.ec || ""}</span>
-                                                                                            </td>
-                                                                                            <td className="px-4 py-2.5 text-slate-800">
-                                                                                                {entry.limit ? (
-                                                                                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-slate-100 font-bold text-xs border border-slate-200">
-                                                                                                        <Scale size={12} className="text-slate-500"/>
-                                                                                                        {entry.limit}
-                                                                                                    </span>
-                                                                                                ) : (
-                                                                                                    <span className="text-slate-300 text-xs">-</span>
-                                                                                                )}
-                                                                                            </td>
-                                                                                            <td className="px-4 py-2.5 text-slate-600">
-                                                                                                <div className="flex flex-col gap-1">
-                                                                                                    {entry.note && <span className="text-xs italic text-slate-500 mb-1">{entry.note}</span>}
-                                                                                                    {regData && (
-                                                                                                        <>
-                                                                                                            <div className="flex items-start gap-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 p-1.5 rounded">
-                                                                                                                <ClipboardCheck size={14} className="flex-shrink-0 mt-0.5"/> 
-                                                                                                                <span>{regData.implication}</span>
-                                                                                                            </div>
-                                                                                                            <div className="flex items-start gap-1.5 text-xs text-slate-600 bg-slate-50 p-1.5 rounded border border-slate-100">
-                                                                                                                <FileText size={14} className="flex-shrink-0 mt-0.5"/>
-                                                                                                                <span>Paperwork: {regData.paperwork}</span>
-                                                                                                            </div>
-                                                                                                        </>
-                                                                                                    )}
-                                                                                                </div>
-                                                                                            </td>
-                                                                                        </tr>
-                                                                                    );
-                                                                                })}
-                                                                            </tbody>
-                                                                        </table>
+                                                                {item.found && item.entries.length > 0 && (
+                                                                    <div className="mt-3 bg-slate-50 rounded-lg p-3 border border-slate-100 text-sm">
+                                                                        {item.entries.map((entry, eIdx) => (
+                                                                            <div key={eIdx} className="flex flex-col md:flex-row md:justify-between md:items-center py-2 border-b border-slate-200 last:border-0 last:pb-0 gap-2">
+                                                                                <div className="flex-1">
+                                                                                    <span className="font-semibold text-slate-700 block">{entry.listId}</span>
+                                                                                    {entry.ec && <span className="text-xs text-slate-400 font-mono">EC: {entry.ec}</span>}
+                                                                                </div>
+                                                                                <div className="flex-1">
+                                                                                    {entry.limit ? (
+                                                                                        <span className="bg-white border px-2 py-1 rounded text-xs font-medium text-slate-600">{entry.limit}</span>
+                                                                                    ) : <span className="text-xs text-slate-400 italic">No specific limit</span>}
+                                                                                </div>
+                                                                                {entry.note && (
+                                                                                    <div className="flex-1 text-xs text-slate-500 italic">
+                                                                                        {entry.note.substring(0, 60)}{entry.note.length > 60 ? '...' : ''}
+                                                                                    </div>
+                                                                                )}
+                                                                            </div>
+                                                                        ))}
                                                                     </div>
                                                                 )}
                                                             </div>
@@ -694,6 +562,12 @@
                                                     </div>
                                                 );
                                             })}
+                                            {getFilteredResults().length === 0 && (
+                                                <div className="text-center py-10 text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                                                    <Filter size={24} className="mx-auto mb-2 opacity-50"/>
+                                                    <p>No results match this filter.</p>
+                                                </div>
+                                            )}
                                         </div>
                                     </section>
                                 )}
@@ -701,6 +575,7 @@
                         )}
                     </main>
 
+                    {/* RESTORED FOOTER */}
                     <footer className="mt-auto py-8 border-t bg-white text-center print:border-none">
                         <h3 className="font-bold text-slate-800">ADDEV Materials Aerospace B.V.</h3>
                         <p className="text-xs text-slate-500 mt-1">Created by: N. Heins (HSE Specialist)</p>
