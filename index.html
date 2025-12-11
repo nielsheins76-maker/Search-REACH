@@ -36,15 +36,14 @@
             Search, AlertTriangle, CheckCircle, Ban, Users, Activity, Info, 
             ShieldCheck, Eraser, Upload, Trash2, BookOpen, X,
             ClipboardCheck, FileText, ArrowRight, AlertOctagon, Database, Loader2, Scale,
-            Check, XCircle, CalendarClock, Gavel, FileSpreadsheet, Filter, PieChart, ExternalLink
+            Check, XCircle, CalendarClock, Gavel, FileSpreadsheet, Filter, PieChart, ExternalLink, Hash, RefreshCw, Link
         } from 'https://esm.sh/lucide-react@0.263.1';
 
         // --- CONSTANTS ---
-        const INTERNAL_VERSION = "7.7 - Smart Details & EC Fix"; 
+        const INTERNAL_VERSION = "8.4 - PIC Fix & Smart Linking"; 
         const SIX_MONTHS_MS = 15778800000; 
 
-        // --- COMMON RESTRICTION SUMMARIES ---
-        // This dictionary maps "Entry X" to a human-readable summary.
+        // --- SMART RESTRICTION SUMMARIES ---
         const RESTRICTION_MAP = {
             "3": "Liquid substances/mixtures (ornamental objects, tricks/jokes)",
             "23": "Cadmium: Banned in paints, plastics, jewellery, brazing",
@@ -71,6 +70,7 @@
         const regulatoryInfo = {
             "annex xvii": { category: "restricted", title: "REACH Annex XVII", description: "Substance is restricted for specific applications or conditions.", implication: "CONDITIONAL: Check Annex XVII Col 2. May be banned in consumer goods.", paperwork: "Statement of Compliance (SoC).", riskColor: "text-red-700 bg-red-50 border-red-200" },
             "pop": { category: "prohibited", title: "POPs Regulation", description: "Persistent Organic Pollutants. Strict prohibition.", implication: "BANNED: Often Trace Contaminant limit (UTC) applies.", paperwork: "Supplier Declaration of Absence.", riskColor: "text-red-900 bg-red-100 border-red-300" },
+            "pic": { category: "prohibited", title: "PIC Regulation (Prior Informed Consent)", description: "Regulates export/import of hazardous chemicals.", implication: "NOTIFICATION: Export notification required. Use restrictions may apply.", paperwork: "Export Notification / Explicit Consent.", riskColor: "text-orange-800 bg-orange-100 border-orange-300" },
             "annex xiv": { category: "warning", title: "REACH Annex XIV", description: "Use banned after 'Sunset Date' without Authorisation.", implication: "USE BAN: Cannot use without specific Authorisation number.", paperwork: "Proof of Authorisation OR Article 33 Declaration.", riskColor: "text-orange-700 bg-orange-50 border-orange-200" },
             "annex vi": { category: "classification", title: "CLP Annex VI", description: "Legally binding classification (CMR).", implication: "Ensure SDS and Labels match harmonised classification.", paperwork: "Up-to-date Safety Data Sheet (SDS).", riskColor: "text-emerald-700 bg-emerald-50 border-emerald-200" },
             "svhc": { category: "watch", title: "SVHC Candidate List", description: "Candidate substances for Annex XIV.", implication: "Threshold >0.1% w/w triggers Article 33 & SCIP duties.", paperwork: "Article 33 Declaration & SCIP Number.", riskColor: "text-yellow-700 bg-yellow-50 border-yellow-200" },
@@ -245,10 +245,9 @@
                 let name = rawName.trim();
                 const lower = name.toLowerCase();
                 
-                // 1. Rename Drug Precursor
+                // Normalization Rules
                 if (lower.includes("drug precursor")) return "Precursor";
-                
-                // 2. Standardize Annex Case
+                if (lower === "pic" || lower === "pic.") return "PIC"; // PIC FIX
                 if (lower === "annex xvii") return "Annex XVII";
                 if (lower === "annex xiv") return "Annex XIV";
                 if (lower === "annex vi") return "Annex VI";
@@ -262,27 +261,77 @@
                 const noteLower = (note || "").toLowerCase();
                 const limitLower = (limit || "").toLowerCase();
                 
-                // 1. Check for specific Entry numbers to provide Smart Summaries
                 const entryMatch = note.match(/Entry[:\s]+(\d+)/i) || limit.match(/Entry[:\s]+(\d+)/i);
                 if (entryMatch) {
                     const entryNum = entryMatch[1];
                     if (RESTRICTION_MAP[entryNum]) {
-                        return { 
-                            text: RESTRICTION_MAP[entryNum], 
-                            type: "smart",
-                            entry: entryNum
-                        };
+                        return { text: RESTRICTION_MAP[entryNum], type: "smart", entry: entryNum };
                     }
                     return { text: `See Annex XVII Entry ${entryNum}`, type: "entry", entry: entryNum };
                 }
 
-                // 2. Check for keywords in notes if no entry number
                 if (noteLower.includes("consumer") || noteLower.includes("banned")) {
-                    // Extract a readable sentence if possible, otherwise return generic
                     return { text: "Check restrictions for Consumer/Professional use", type: "warning" };
                 }
                 
                 return { text: "", type: "none" };
+            };
+
+            // --- INTELLIGENT COLUMN DETECTION (v8.3 - STRICT) ---
+            const detectColumns = (data) => {
+                if (!data || data.length === 0) return { cas: '', ec: '', name: '', list: '', limit: '', note: '' };
+                
+                const headers = Object.keys(data[0]);
+                const scores = headers.map(h => ({ header: h, cas: 0, ec: 0, name: 0, list: 0 }));
+                
+                const sample = data.slice(0, 100);
+                sample.forEach(row => {
+                    headers.forEach((h, idx) => {
+                        const val = String(row[h] || "").trim();
+                        const valLower = val.toLowerCase();
+                        if (!val) return;
+                        
+                        if (/^\d{3}-\d{3}-\d$/.test(val)) scores[idx].ec += 10; 
+                        if (/^\d{1,7}-\d{2}-\d$/.test(val)) scores[idx].cas += 10;
+                        
+                        if (valLower.includes('annex') || valLower.includes('precursor') || valLower.includes('explosive') || valLower.includes('pop') || val.includes(';')) {
+                            scores[idx].list += 20;
+                            scores[idx].name -= 100;
+                        }
+
+                        if (val.length > 2 && !/^\d/.test(val) && scores[idx].name > -50) {
+                             scores[idx].name += 1;
+                        }
+                    });
+                });
+
+                headers.forEach((h, idx) => {
+                    const lower = h.toLowerCase();
+                    if (lower.includes('ec ') || lower.includes('einecs') || lower === 'ec') scores[idx].ec += 100;
+                    if (lower.includes('cas')) scores[idx].cas += 100;
+                    if ((lower.includes('name') || lower.includes('substance') || lower.includes('chemical')) && !lower.includes('list')) scores[idx].name += 100;
+                    if (lower.includes('list') || lower.includes('reg')) scores[idx].list += 50;
+                });
+
+                const findBest = (type) => scores.reduce((a, b) => a[type] > b[type] ? a : b).header;
+                
+                const bestEc = findBest('ec');
+                const bestCas = findBest('cas');
+                const bestList = findBest('list');
+                
+                const nameCandidates = scores.filter(s => s.header !== bestEc && s.header !== bestCas && s.header !== bestList);
+                const bestName = nameCandidates.length > 0 ? nameCandidates.reduce((a, b) => a.name > b.name ? a : b).header : '';
+
+                const findKey = (keywords) => headers.find(h => keywords.some(k => h.toLowerCase().includes(k)));
+
+                return {
+                    ec: bestEc,
+                    cas: bestCas,
+                    name: bestName || findKey(['name', 'chemical', 'substance', 'english']), 
+                    list: bestList || findKey(['list', 'regulation', 'inventory']),
+                    limit: findKey(['limit', 'value', 'threshold']),
+                    note: findKey(['note', 'description', 'entry', 'detail'])
+                };
             };
 
             // --- FILE UPLOAD LOGIC ---
@@ -290,7 +339,7 @@
                 const file = event.target.files[0];
                 if (!file) return;
                 setIsLoading(true);
-                setLoadingMessage("Parsing large dataset...");
+                setLoadingMessage("Re-indexing database...");
 
                 const reader = new FileReader();
                 reader.onload = async (e) => {
@@ -299,64 +348,54 @@
                         let arr = Array.isArray(json) ? json : (json.data || []);
                         if(Array.isArray(arr)) arr = arr.flat(Infinity);
                         
-                        // Analysis & Key Finding
-                        const sample = arr.find(i => Object.keys(i).length > 2) || arr[0];
-                        const keys = Object.keys(sample || {});
-
-                        const findBestKey = (candidates, exclusions) => {
-                            return keys.find(k => {
-                                const lower = k.toLowerCase();
-                                const matchesCandidate = candidates.some(c => lower.includes(c));
-                                const matchesExclusion = exclusions.some(ex => lower.includes(ex));
-                                return matchesCandidate && !matchesExclusion;
-                            });
-                        };
-
-                        const casKey = findBestKey(['cas'], ['case', 'cast']);
-                        // BROADER SEARCH FOR EC KEYS
-                        const ecKey = findBestKey(['ec number', 'ec_no', 'ec no', 'ec#', 'ec_number', 'ec '], ['spec', 'dec']);
-                        const nameKey = findBestKey(
-                            ['substance name', 'chemical name', 'name', 'description', 'english name'], 
-                            ['list', 'file', 'date', 'id', 'code', 'cas', 'ec'] 
-                        );
-                        const listKey = findBestKey(['list', 'regulation', 'inventory'], ['listening']);
-                        const limitKey = findBestKey(['limit', 'value', 'threshold', 'concentration', 'condition'], []);
-                        const noteKey = findBestKey(['note', 'description', 'entry', 'detail'], ['date', 'file']);
-
+                        const keys = detectColumns(arr);
                         const normalized = [];
 
                         arr.forEach(item => {
-                            const cas = String(item[casKey] || item["CAS No"] || "").trim().toLowerCase();
-                            const name = String(item[nameKey] || item["Substance Name"] || item["Name"] || "Unknown Substance").trim();
-                            const ec = String(item[ecKey] || "").trim().toLowerCase();
+                            const cas = String(item[keys.cas] || "").trim().toLowerCase();
+                            let name = String(item[keys.name] || "").trim();
+                            
+                            if (name.toLowerCase().includes('annex') || name.includes(';')) {
+                                const backupName = Object.values(item).find(v => 
+                                    typeof v === 'string' && 
+                                    v.length > 3 && 
+                                    !v.toLowerCase().includes('annex') && 
+                                    !v.includes(';') && 
+                                    !/^\d/.test(v)
+                                );
+                                name = backupName ? String(backupName).trim() : "Unknown Substance";
+                            }
+                            if(!name) name = "Unknown Substance";
+
+                            let rawEc = String(item[keys.ec] || "").trim();
+                            if (!rawEc || !/^[\d-]+$/.test(rawEc)) {
+                                const rowValues = Object.values(item);
+                                const foundEc = rowValues.find(v => typeof v === 'string' && /^\d{3}-\d{3}-\d$/.test(v.trim()));
+                                if (foundEc) rawEc = foundEc.trim();
+                            }
+                            const ec = /^[\d-]+$/.test(rawEc) ? rawEc : "";
                             
                             if (cas.length < 3 && name.length < 3) return;
 
-                            const rawList = item[listKey] || "Unknown List";
-                            const rawLimit = limitKey ? String(item[limitKey]) : "";
-                            const rawNote = noteKey ? String(item[noteKey]) : "";
+                            const rawList = item[keys.list] || "Unknown List";
+                            const rawLimit = keys.limit ? String(item[keys.limit]) : "";
+                            const rawNote = keys.note ? String(item[keys.note]) : "";
 
-                            // Split logic
                             const listParts = String(rawList).split(';').map(s => s.trim()).filter(s => s);
                             
-                            // Limit splitting
                             let limitParts = [];
                             if (listParts.length > 1 && rawLimit.includes(';')) {
                                 const splits = rawLimit.split(';').map(l => l.trim());
                                 if (splits.length === listParts.length) limitParts = splits;
                             }
 
-                            // TRACKER: Avoid adding duplicate normalized lists for the same substance row
                             const addedListsForThisRow = new Set();
 
                             listParts.forEach((part, index) => {
-                                // Filter out EC numbers in list column
                                 if (/^\d{3}-\d{3}-\d$/.test(part)) return;
 
-                                // Normalize: Fix Case, Rename "Drug Precursor"
                                 const cleanListId = normalizeListName(part);
 
-                                // Dedup: If we already added "Annex XVII" for this row, skip the second one
                                 if (addedListsForThisRow.has(cleanListId)) return;
                                 addedListsForThisRow.add(cleanListId);
 
@@ -366,7 +405,7 @@
                                 normalized.push({
                                     cas,
                                     name,
-                                    ec, // Store EC here
+                                    ec, 
                                     listId: cleanListId,
                                     limit: finalLimit || "No specific limit",
                                     note: rawNote
@@ -374,7 +413,6 @@
                             });
                         });
 
-                        setLoadingMessage(`Indexing ${normalized.length} records...`);
                         await db.substances.clear();
                         await db.substances.bulkAdd(normalized);
                         
@@ -388,14 +426,14 @@
                         setLastUploadDate(dateStr);
                         setLastUploadTimestamp(timestamp);
                         setDbLoaded(true);
-                        addToast(`Database updated with ${normalized.length} records!`, "success");
-                    } catch (err) { addToast("File parse error: " + err.message, "error"); } 
+                        addToast(`Database updated!`, "success");
+                    } catch (err) { addToast("Error: " + err.message, "error"); } 
                     finally { setIsLoading(false); setLoadingMessage(""); }
                 };
                 reader.readAsText(file);
             };
 
-            // --- SEARCH LOGIC ---
+            // --- SEARCH LOGIC (FIXED: Cross-Referencing) ---
             const handleSearch = async () => {
                 if (!inputText.trim()) return;
                 setIsLoading(true);
@@ -408,38 +446,69 @@
 
                     for (const query of queries) {
                         const type = detectInputType(query);
-                        let matches = [];
+                        let initialMatches = [];
 
+                        // 1. Initial Search
                         if (type === 'CAS') {
                             const clean = query.replace(/[^\d-]/g, ""); 
-                            matches = await db.substances.filter(s => s.cas === clean || s.cas === clean.replace(/-/g, "")).toArray();
+                            initialMatches = await db.substances.filter(s => s.cas === clean || s.cas === clean.replace(/-/g, "")).toArray();
                         } else if (type === 'EC') {
-                            matches = await db.substances.where('ec').equals(query).toArray();
+                            initialMatches = await db.substances.where('ec').equals(query).toArray();
+                            if (initialMatches.length === 0) {
+                                const strippedQuery = query.replace(/-/g, "");
+                                initialMatches = await db.substances.filter(s => s.ec.replace(/-/g, "") === strippedQuery).toArray();
+                            }
                         } else {
-                            matches = await db.substances.filter(s => s.name.toLowerCase().includes(query.toLowerCase())).toArray();
+                            initialMatches = await db.substances.filter(s => s.name.toLowerCase().includes(query.toLowerCase())).toArray();
                         }
 
-                        if (matches.length > 0) {
-                            // --- SMART DEDUPLICATION & EC AGGREGATION ---
-                            const uniqueListEntries = new Map();
-                            let bestEc = ""; // Capture the best EC number found across ALL matches for this substance
+                        // 2. Cross-Reference (Smart Linking)
+                        // Collect all Identifiers found in the initial results
+                        let relatedNames = new Set();
+                        let relatedCas = new Set();
+                        let relatedEc = new Set();
 
-                            matches.forEach(m => {
-                                // 1. AGGRESSIVE EC CAPTURE
+                        initialMatches.forEach(m => {
+                            if (m.name && m.name.length > 2 && m.name !== "Unknown Substance") relatedNames.add(m.name.toLowerCase());
+                            if (m.cas && m.cas.length > 3) relatedCas.add(m.cas);
+                            if (m.ec && m.ec.length > 3) relatedEc.add(m.ec);
+                        });
+
+                        // 3. Secondary Search (The "Net")
+                        // If we found a Name via CAS, now search by that Name to find rows missing CAS
+                        let allMatches = [...initialMatches];
+                        
+                        if (relatedNames.size > 0) {
+                            const nameMatches = await db.substances.filter(s => relatedNames.has(s.name.toLowerCase())).toArray();
+                            allMatches = [...allMatches, ...nameMatches];
+                        }
+
+                        // 4. Processing & Deduplication
+                        if (allMatches.length > 0) {
+                            const uniqueListEntries = new Map();
+                            let bestEc = ""; 
+                            let bestCas = "";
+                            let bestName = "";
+
+                            allMatches.forEach(m => {
                                 if (m.ec && m.ec.length > 3 && !bestEc) bestEc = m.ec;
+                                if (m.cas && m.cas.length > 4 && !bestCas) bestCas = m.cas;
+                                
+                                const nameLower = (m.name || "").toLowerCase();
+                                if (nameLower.length > 2 && !nameLower.includes('annex') && !nameLower.includes(';') && nameLower !== "unknown substance") {
+                                    bestName = m.name;
+                                }
 
                                 const normList = normalizeListName(m.listId);
-                                
-                                // 2. MERGE DUPLICATES
+                                const uniqueKey = normList + (m.limit || ""); // Composite key to distinguish different limits
+
                                 if (uniqueListEntries.has(normList)) {
                                     const existing = uniqueListEntries.get(normList);
                                     
-                                    // Check if current is 'better' than existing
                                     const currentHasLimit = m.limit && !m.limit.toLowerCase().includes("no specific limit");
                                     const existingHasLimit = existing.limit && !existing.limit.toLowerCase().includes("no specific limit");
                                     const currentHasNote = m.note && m.note.length > 2;
 
-                                    // Priority: 1. Real Limit, 2. Real Note
                                     if (currentHasLimit && !existingHasLimit) {
                                         uniqueListEntries.set(normList, { ...m, listId: normList });
                                     } 
@@ -456,6 +525,7 @@
                                 let risk = { level: "unknown", action: "LISTED" };
                                 if (lowerList.includes("pop")) risk = { level: "prohibited", action: "BANNED" };
                                 else if (lowerList.includes("annex xvii")) risk = { level: "restricted", action: "RESTRICTED" };
+                                else if (lowerList.includes("pic")) risk = { level: "prohibited", action: "PIC NOTIFICATION" }; // PIC RISK
                                 else if (lowerList.includes("annex xiv")) risk = { level: "warning", action: "AUTHORISATION" };
                                 else if (lowerList.includes("svhc")) risk = { level: "watch", action: "SVHC CANDIDATE" };
                                 else if (lowerList.includes("annex vi")) risk = { level: "classification", action: "CLP HAZARD" };
@@ -471,13 +541,14 @@
                             const primary = entries[0];
                             resultsArray.push({
                                 query,
-                                matchedName: primary.name,
+                                matchedName: bestName || "Chemical Name Not Found", 
                                 type,
                                 entries,
                                 riskLevel: primary.level,
                                 action: primary.action,
                                 found: true,
-                                ec: bestEc // Pass the aggregated EC number
+                                ec: bestEc,
+                                cas: bestCas 
                             });
                         } else {
                             let risk = "low"; 
@@ -579,7 +650,7 @@
                                         <span className="block font-bold">{dbLoaded ? `${recordCount.toLocaleString()} Records` : "No Data"}</span>
                                         {dbLoaded && isDataOutdated() && <span className="text-[10px] font-bold block animate-pulse">⚠️ OUTDATED</span>}
                                     </div>
-                                    {dbLoaded && <button onClick={async () => { if(confirm("Clear DB?")) { await db.substances.clear(); setDbLoaded(false); }}} className="ml-2 hover:opacity-75"><Trash2 size={14} /></button>}
+                                    {dbLoaded && <button onClick={async () => { if(confirm("Clear DB and Re-Upload?")) { await db.substances.clear(); setDbLoaded(false); }}} className="ml-2 hover:opacity-75"><RefreshCw size={14} /></button>}
                                 </div>
                             </div>
                         </div>
@@ -666,21 +737,24 @@
                                                                             <span className="font-mono text-lg font-bold text-slate-900">{item.query}</span>
                                                                             {item.type !== 'CAS' && <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 rounded uppercase tracking-wider">{item.type} Match</span>}
                                                                         </div>
-                                                                        <p className="text-sm text-slate-600 font-medium">{item.matchedName}</p>
+                                                                        <p className="text-2xl font-bold text-slate-800 mt-1 mb-2 capitalize">{item.matchedName}</p>
                                                                         
-                                                                        {/* EC NUMBER DISPLAY - AGGREGATED */}
-                                                                        {item.ec ? (
-                                                                            <div className="mt-1 flex items-center gap-2">
-                                                                                <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded border border-slate-200 font-mono">
+                                                                        {/* EC & CAS NUMBER DISPLAY - AGGREGATED */}
+                                                                        <div className="flex flex-wrap gap-2">
+                                                                             {item.ec && (
+                                                                                <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded border border-slate-200 font-mono flex items-center gap-1">
                                                                                     EC: {item.ec}
                                                                                 </span>
-                                                                            </div>
-                                                                        ) : (
-                                                                            // Fallback if truly no EC found
-                                                                             <div className="mt-1 flex items-center gap-2">
-                                                                                <span className="text-slate-300 text-[10px] italic">EC not found</span>
-                                                                            </div>
-                                                                        )}
+                                                                             )}
+                                                                             {item.cas && (
+                                                                                <span className="bg-green-50 text-green-700 text-xs px-2 py-0.5 rounded border border-green-200 font-mono flex items-center gap-1">
+                                                                                    CAS: {item.cas}
+                                                                                </span>
+                                                                             )}
+                                                                             {!item.ec && !item.cas && (
+                                                                                 <span className="text-slate-300 text-[10px] italic">Identifiers not found</span>
+                                                                             )}
+                                                                        </div>
                                                                     </div>
                                                                     <div className="text-right">
                                                                          <span className={`px-3 py-1 rounded text-xs font-bold uppercase ${styles.badge}`}>
@@ -697,37 +771,38 @@
                                                                 </div>
                                                                 
                                                                 {item.found && item.entries.length > 0 && (
-                                                                    <div className="mt-3 bg-slate-50 rounded-lg p-3 border border-slate-100 text-sm">
+                                                                    <div className="mt-4 bg-slate-50 rounded-lg p-3 border border-slate-100 text-sm">
+                                                                        <div className="grid grid-cols-12 gap-2 border-b border-slate-200 pb-2 mb-2 text-xs font-bold text-slate-400 uppercase tracking-wider">
+                                                                            <div className="col-span-4">Regulation List</div>
+                                                                            <div className="col-span-3">Details / Limit</div>
+                                                                            <div className="col-span-5">Restriction Context</div>
+                                                                        </div>
                                                                         {item.entries.map((entry, eIdx) => {
-                                                                            // Extract intelligent restriction info
                                                                             const smartDetails = getSmartDetails(entry.note, entry.limit);
                                                                             
                                                                             return (
-                                                                                <div key={eIdx} className="flex flex-col md:flex-row md:justify-between md:items-center py-2 border-b border-slate-200 last:border-0 last:pb-0 gap-2">
-                                                                                    {/* COLUMN 1: List Name */}
-                                                                                    <div className="flex-1">
+                                                                                <div key={eIdx} className="grid grid-cols-12 gap-2 py-2 border-b border-slate-100 last:border-0 items-center">
+                                                                                    <div className="col-span-4">
                                                                                         <span className="font-semibold text-slate-700 block">{entry.listId}</span>
                                                                                     </div>
 
-                                                                                    {/* COLUMN 2: Limit / Entry # */}
-                                                                                    <div className="flex-1">
+                                                                                    <div className="col-span-3">
                                                                                         {smartDetails.type === 'entry' || smartDetails.type === 'smart' ? (
-                                                                                            <span className="bg-red-50 text-red-700 border border-red-200 px-2 py-1 rounded text-xs font-bold">
-                                                                                                Restriction Entry {smartDetails.entry}
+                                                                                            <span className="bg-red-50 text-red-700 border border-red-200 px-2 py-1 rounded text-xs font-bold whitespace-nowrap">
+                                                                                                Entry {smartDetails.entry}
                                                                                             </span>
                                                                                         ) : (
-                                                                                            entry.limit && !entry.limit.includes("No specific limit") ? 
+                                                                                            entry.limit && !entry.limit.toLowerCase().includes("no specific limit") ? 
                                                                                             <span className="bg-white border px-2 py-1 rounded text-xs font-medium text-slate-600">{entry.limit}</span> :
                                                                                             <span className="text-xs text-slate-400 italic">No specific limit</span>
                                                                                         )}
                                                                                     </div>
 
-                                                                                    {/* COLUMN 3: Smart Details (Replaces Note) */}
-                                                                                    <div className="flex-1 text-xs">
+                                                                                    <div className="col-span-5 text-xs leading-tight">
                                                                                         {smartDetails.type === 'smart' ? (
-                                                                                            <span className="font-medium text-slate-800">{smartDetails.text}</span>
+                                                                                            <span className="font-bold text-slate-800 block">{smartDetails.text}</span>
                                                                                         ) : smartDetails.type === 'warning' ? (
-                                                                                            <span className="font-medium text-orange-600">{smartDetails.text}</span>
+                                                                                            <span className="font-medium text-orange-600 block">{smartDetails.text}</span>
                                                                                         ) : (
                                                                                             <span className="text-slate-400 italic">See official text</span>
                                                                                         )}
