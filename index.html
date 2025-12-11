@@ -40,7 +40,7 @@
         } from 'https://esm.sh/lucide-react@0.263.1';
 
         // --- CONSTANTS ---
-        const INTERNAL_VERSION = "7.1 - Date Status Colors"; 
+        const INTERNAL_VERSION = "7.2 - Name Column Fix"; 
         const SIX_MONTHS_MS = 15778800000; // Approx 6 months in milliseconds
         
         // --- DATABASE SETUP ---
@@ -223,7 +223,7 @@
                 return "bg-green-50 border-green-200 text-green-700"; // Fresh < 6 months
             };
 
-            // --- FILE UPLOAD ---
+            // --- UPDATED FILE UPLOAD LOGIC ---
             const handleFileUpload = (event) => {
                 const file = event.target.files[0];
                 if (!file) return;
@@ -237,18 +237,39 @@
                         let arr = Array.isArray(json) ? json : (json.data || []);
                         if(Array.isArray(arr)) arr = arr.flat(Infinity);
                         
-                        const normalized = arr.map(item => {
-                            const keys = Object.keys(item);
-                            const casKey = keys.find(k => /cas/i.test(k));
-                            const nameKey = keys.find(k => /name|substance/i.test(k) && !/list/i.test(k));
-                            const ecKey = keys.find(k => /ec/i.test(k));
-                            const listKey = keys.find(k => /list|reg/i.test(k));
-                            const limitKey = keys.find(k => /limit|val|conc/i.test(k));
-                            const noteKey = keys.find(k => /note|desc/i.test(k));
+                        // 1. ANALYSIS: Find the best headers based on the first valid record
+                        const sample = arr.find(i => Object.keys(i).length > 2) || arr[0];
+                        const keys = Object.keys(sample || {});
 
+                        // Helper to find key with priority
+                        const findBestKey = (candidates, exclusions) => {
+                            return keys.find(k => {
+                                const lower = k.toLowerCase();
+                                const matchesCandidate = candidates.some(c => lower.includes(c));
+                                const matchesExclusion = exclusions.some(ex => lower.includes(ex));
+                                return matchesCandidate && !matchesExclusion;
+                            });
+                        };
+
+                        // Smart Key Mapping
+                        const casKey = findBestKey(['cas'], ['case', 'cast']);
+                        const ecKey = findBestKey(['ec number', 'ec_no', 'ec '], ['spec', 'dec']);
+                        
+                        // Strict Name Mapping: Avoids "List Name" or "File Name"
+                        const nameKey = findBestKey(
+                            ['substance name', 'chemical name', 'name', 'description', 'english name'], 
+                            ['list', 'file', 'date', 'id', 'code', 'cas', 'ec'] 
+                        );
+
+                        const listKey = findBestKey(['list', 'regulation', 'inventory'], ['listening']);
+                        const limitKey = findBestKey(['limit', 'value', 'threshold', 'concentration', 'condition'], []);
+                        const noteKey = findBestKey(['note', 'description', 'entry', 'detail'], ['date', 'file']);
+
+                        const normalized = arr.map(item => {
                             return {
-                                cas: String(item[casKey] || "").trim().toLowerCase(),
-                                name: String(item[nameKey] || "Unknown").trim(),
+                                cas: String(item[casKey] || item["CAS No"] || "").trim().toLowerCase(),
+                                // Fallback: If specific name key is empty, try a generic check, otherwise "Unknown"
+                                name: String(item[nameKey] || item["Substance Name"] || item["Name"] || "Unknown Substance").trim(),
                                 ec: String(item[ecKey] || "").trim().toLowerCase(),
                                 listId: item[listKey] || "Unknown List",
                                 limit: limitKey ? item[limitKey] : "",
