@@ -40,8 +40,25 @@
         } from 'https://esm.sh/lucide-react@0.263.1';
 
         // --- CONSTANTS ---
-        const INTERNAL_VERSION = "7.2 - Name Column Fix"; 
-        const SIX_MONTHS_MS = 15778800000; // Approx 6 months in milliseconds
+        const INTERNAL_VERSION = "7.7 - Smart Details & EC Fix"; 
+        const SIX_MONTHS_MS = 15778800000; 
+
+        // --- COMMON RESTRICTION SUMMARIES ---
+        // This dictionary maps "Entry X" to a human-readable summary.
+        const RESTRICTION_MAP = {
+            "3": "Liquid substances/mixtures (ornamental objects, tricks/jokes)",
+            "23": "Cadmium: Banned in paints, plastics, jewellery, brazing",
+            "27": "Nickel: Prolonged skin contact (Jewellery, buttons)",
+            "43": "Azocolourants: Banned in textiles/leather contacts",
+            "48": "Toluene: Banned in Adhesives & Spray Paints (Consumer use)",
+            "50": "PAH: Extender oils in tyres & plastic components",
+            "51": "Phthalates (DEHP, DBP...): Plasticised toys & childcare articles",
+            "52": "Phthalates (DINP, DIDP...): Toys & childcare articles (mouthable)",
+            "63": "Lead: Jewellery & Articles (Mouthing/Skin Contact)",
+            "72": "CMRs in Textiles: Clothing & Footwear restrictions",
+            "74": "Diisocyanates: Training required for industrial/pro use",
+            "75": "Tattoo Inks: Substances banned in tattoo mixtures"
+        };
         
         // --- DATABASE SETUP ---
         const db = new Dexie("ChemCheckerDB");
@@ -223,7 +240,52 @@
                 return "bg-green-50 border-green-200 text-green-700"; // Fresh < 6 months
             };
 
-            // --- UPDATED FILE UPLOAD LOGIC ---
+            // --- HELPER: NORMALIZE LIST NAMES ---
+            const normalizeListName = (rawName) => {
+                let name = rawName.trim();
+                const lower = name.toLowerCase();
+                
+                // 1. Rename Drug Precursor
+                if (lower.includes("drug precursor")) return "Precursor";
+                
+                // 2. Standardize Annex Case
+                if (lower === "annex xvii") return "Annex XVII";
+                if (lower === "annex xiv") return "Annex XIV";
+                if (lower === "annex vi") return "Annex VI";
+                if (lower === "annex iv") return "Annex IV";
+                
+                return name;
+            };
+
+            // --- HELPER: GET SMART DETAILS ---
+            const getSmartDetails = (note, limit) => {
+                const noteLower = (note || "").toLowerCase();
+                const limitLower = (limit || "").toLowerCase();
+                
+                // 1. Check for specific Entry numbers to provide Smart Summaries
+                const entryMatch = note.match(/Entry[:\s]+(\d+)/i) || limit.match(/Entry[:\s]+(\d+)/i);
+                if (entryMatch) {
+                    const entryNum = entryMatch[1];
+                    if (RESTRICTION_MAP[entryNum]) {
+                        return { 
+                            text: RESTRICTION_MAP[entryNum], 
+                            type: "smart",
+                            entry: entryNum
+                        };
+                    }
+                    return { text: `See Annex XVII Entry ${entryNum}`, type: "entry", entry: entryNum };
+                }
+
+                // 2. Check for keywords in notes if no entry number
+                if (noteLower.includes("consumer") || noteLower.includes("banned")) {
+                    // Extract a readable sentence if possible, otherwise return generic
+                    return { text: "Check restrictions for Consumer/Professional use", type: "warning" };
+                }
+                
+                return { text: "", type: "none" };
+            };
+
+            // --- FILE UPLOAD LOGIC ---
             const handleFileUpload = (event) => {
                 const file = event.target.files[0];
                 if (!file) return;
@@ -237,11 +299,10 @@
                         let arr = Array.isArray(json) ? json : (json.data || []);
                         if(Array.isArray(arr)) arr = arr.flat(Infinity);
                         
-                        // 1. ANALYSIS: Find the best headers based on the first valid record
+                        // Analysis & Key Finding
                         const sample = arr.find(i => Object.keys(i).length > 2) || arr[0];
                         const keys = Object.keys(sample || {});
 
-                        // Helper to find key with priority
                         const findBestKey = (candidates, exclusions) => {
                             return keys.find(k => {
                                 const lower = k.toLowerCase();
@@ -251,31 +312,67 @@
                             });
                         };
 
-                        // Smart Key Mapping
                         const casKey = findBestKey(['cas'], ['case', 'cast']);
-                        const ecKey = findBestKey(['ec number', 'ec_no', 'ec '], ['spec', 'dec']);
-                        
-                        // Strict Name Mapping: Avoids "List Name" or "File Name"
+                        // BROADER SEARCH FOR EC KEYS
+                        const ecKey = findBestKey(['ec number', 'ec_no', 'ec no', 'ec#', 'ec_number', 'ec '], ['spec', 'dec']);
                         const nameKey = findBestKey(
                             ['substance name', 'chemical name', 'name', 'description', 'english name'], 
                             ['list', 'file', 'date', 'id', 'code', 'cas', 'ec'] 
                         );
-
                         const listKey = findBestKey(['list', 'regulation', 'inventory'], ['listening']);
                         const limitKey = findBestKey(['limit', 'value', 'threshold', 'concentration', 'condition'], []);
                         const noteKey = findBestKey(['note', 'description', 'entry', 'detail'], ['date', 'file']);
 
-                        const normalized = arr.map(item => {
-                            return {
-                                cas: String(item[casKey] || item["CAS No"] || "").trim().toLowerCase(),
-                                // Fallback: If specific name key is empty, try a generic check, otherwise "Unknown"
-                                name: String(item[nameKey] || item["Substance Name"] || item["Name"] || "Unknown Substance").trim(),
-                                ec: String(item[ecKey] || "").trim().toLowerCase(),
-                                listId: item[listKey] || "Unknown List",
-                                limit: limitKey ? item[limitKey] : "",
-                                note: noteKey ? item[noteKey] : ""
-                            };
-                        }).filter(i => i.cas.length > 3 || i.name.length > 2);
+                        const normalized = [];
+
+                        arr.forEach(item => {
+                            const cas = String(item[casKey] || item["CAS No"] || "").trim().toLowerCase();
+                            const name = String(item[nameKey] || item["Substance Name"] || item["Name"] || "Unknown Substance").trim();
+                            const ec = String(item[ecKey] || "").trim().toLowerCase();
+                            
+                            if (cas.length < 3 && name.length < 3) return;
+
+                            const rawList = item[listKey] || "Unknown List";
+                            const rawLimit = limitKey ? String(item[limitKey]) : "";
+                            const rawNote = noteKey ? String(item[noteKey]) : "";
+
+                            // Split logic
+                            const listParts = String(rawList).split(';').map(s => s.trim()).filter(s => s);
+                            
+                            // Limit splitting
+                            let limitParts = [];
+                            if (listParts.length > 1 && rawLimit.includes(';')) {
+                                const splits = rawLimit.split(';').map(l => l.trim());
+                                if (splits.length === listParts.length) limitParts = splits;
+                            }
+
+                            // TRACKER: Avoid adding duplicate normalized lists for the same substance row
+                            const addedListsForThisRow = new Set();
+
+                            listParts.forEach((part, index) => {
+                                // Filter out EC numbers in list column
+                                if (/^\d{3}-\d{3}-\d$/.test(part)) return;
+
+                                // Normalize: Fix Case, Rename "Drug Precursor"
+                                const cleanListId = normalizeListName(part);
+
+                                // Dedup: If we already added "Annex XVII" for this row, skip the second one
+                                if (addedListsForThisRow.has(cleanListId)) return;
+                                addedListsForThisRow.add(cleanListId);
+
+                                let finalLimit = rawLimit;
+                                if (limitParts.length > 0) finalLimit = limitParts[index];
+
+                                normalized.push({
+                                    cas,
+                                    name,
+                                    ec, // Store EC here
+                                    listId: cleanListId,
+                                    limit: finalLimit || "No specific limit",
+                                    note: rawNote
+                                });
+                            });
+                        });
 
                         setLoadingMessage(`Indexing ${normalized.length} records...`);
                         await db.substances.clear();
@@ -306,7 +403,6 @@
                 setFilterMode("all"); 
 
                 try {
-                    // Delimiters: Newline, Comma, Semicolon, Colon, Space
                     const queries = inputText.split(/[\n,;:\s]+/).map(q => q.trim()).filter(q => q);
                     const resultsArray = [];
 
@@ -324,7 +420,38 @@
                         }
 
                         if (matches.length > 0) {
-                            const entries = matches.map(m => {
+                            // --- SMART DEDUPLICATION & EC AGGREGATION ---
+                            const uniqueListEntries = new Map();
+                            let bestEc = ""; // Capture the best EC number found across ALL matches for this substance
+
+                            matches.forEach(m => {
+                                // 1. AGGRESSIVE EC CAPTURE
+                                if (m.ec && m.ec.length > 3 && !bestEc) bestEc = m.ec;
+
+                                const normList = normalizeListName(m.listId);
+                                
+                                // 2. MERGE DUPLICATES
+                                if (uniqueListEntries.has(normList)) {
+                                    const existing = uniqueListEntries.get(normList);
+                                    
+                                    // Check if current is 'better' than existing
+                                    const currentHasLimit = m.limit && !m.limit.toLowerCase().includes("no specific limit");
+                                    const existingHasLimit = existing.limit && !existing.limit.toLowerCase().includes("no specific limit");
+                                    const currentHasNote = m.note && m.note.length > 2;
+
+                                    // Priority: 1. Real Limit, 2. Real Note
+                                    if (currentHasLimit && !existingHasLimit) {
+                                        uniqueListEntries.set(normList, { ...m, listId: normList });
+                                    } 
+                                    else if (currentHasNote && !existing.note && !existingHasLimit) {
+                                        uniqueListEntries.set(normList, { ...m, listId: normList });
+                                    }
+                                } else {
+                                    uniqueListEntries.set(normList, { ...m, listId: normList });
+                                }
+                            });
+
+                            const entries = Array.from(uniqueListEntries.values()).map(m => {
                                 const lowerList = String(m.listId).toLowerCase();
                                 let risk = { level: "unknown", action: "LISTED" };
                                 if (lowerList.includes("pop")) risk = { level: "prohibited", action: "BANNED" };
@@ -349,7 +476,8 @@
                                 entries,
                                 riskLevel: primary.level,
                                 action: primary.action,
-                                found: true
+                                found: true,
+                                ec: bestEc // Pass the aggregated EC number
                             });
                         } else {
                             let risk = "low"; 
@@ -402,10 +530,9 @@
                 <div className="min-h-screen bg-slate-50 font-sans text-slate-900 flex flex-col">
                     <ToastContainer toasts={toasts} removeToast={removeToast} />
                     
-                    {/* RESTORED DISCLAIMER MODAL */}
                     {!disclaimerAccepted && <DisclaimerModal onAccept={() => setDisclaimerAccepted(true)} />}
 
-                    {/* GUIDE POPUP MODAL */}
+                    {/* GUIDE MODAL */}
                     {activeGuide && (
                         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm" onClick={() => setActiveGuide(null)}>
                             <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full p-6" onClick={e => e.stopPropagation()}>
@@ -446,7 +573,6 @@
                                 </div>
                                 <div className="h-6 w-px bg-slate-200 hidden md:block"></div>
                                 
-                                {/* RECORDS BOX - DYNAMIC COLORS */}
                                 <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border transition-colors ${getDbStatusColor()}`}>
                                     <Database size={16} />
                                     <div className="text-xs">
@@ -541,6 +667,20 @@
                                                                             {item.type !== 'CAS' && <span className="text-[10px] bg-slate-100 text-slate-500 px-1.5 rounded uppercase tracking-wider">{item.type} Match</span>}
                                                                         </div>
                                                                         <p className="text-sm text-slate-600 font-medium">{item.matchedName}</p>
+                                                                        
+                                                                        {/* EC NUMBER DISPLAY - AGGREGATED */}
+                                                                        {item.ec ? (
+                                                                            <div className="mt-1 flex items-center gap-2">
+                                                                                <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded border border-slate-200 font-mono">
+                                                                                    EC: {item.ec}
+                                                                                </span>
+                                                                            </div>
+                                                                        ) : (
+                                                                            // Fallback if truly no EC found
+                                                                             <div className="mt-1 flex items-center gap-2">
+                                                                                <span className="text-slate-300 text-[10px] italic">EC not found</span>
+                                                                            </div>
+                                                                        )}
                                                                     </div>
                                                                     <div className="text-right">
                                                                          <span className={`px-3 py-1 rounded text-xs font-bold uppercase ${styles.badge}`}>
@@ -558,24 +698,43 @@
                                                                 
                                                                 {item.found && item.entries.length > 0 && (
                                                                     <div className="mt-3 bg-slate-50 rounded-lg p-3 border border-slate-100 text-sm">
-                                                                        {item.entries.map((entry, eIdx) => (
-                                                                            <div key={eIdx} className="flex flex-col md:flex-row md:justify-between md:items-center py-2 border-b border-slate-200 last:border-0 last:pb-0 gap-2">
-                                                                                <div className="flex-1">
-                                                                                    <span className="font-semibold text-slate-700 block">{entry.listId}</span>
-                                                                                    {entry.ec && <span className="text-xs text-slate-400 font-mono">EC: {entry.ec}</span>}
-                                                                                </div>
-                                                                                <div className="flex-1">
-                                                                                    {entry.limit ? (
-                                                                                        <span className="bg-white border px-2 py-1 rounded text-xs font-medium text-slate-600">{entry.limit}</span>
-                                                                                    ) : <span className="text-xs text-slate-400 italic">No specific limit</span>}
-                                                                                </div>
-                                                                                {entry.note && (
-                                                                                    <div className="flex-1 text-xs text-slate-500 italic">
-                                                                                        {entry.note.substring(0, 60)}{entry.note.length > 60 ? '...' : ''}
+                                                                        {item.entries.map((entry, eIdx) => {
+                                                                            // Extract intelligent restriction info
+                                                                            const smartDetails = getSmartDetails(entry.note, entry.limit);
+                                                                            
+                                                                            return (
+                                                                                <div key={eIdx} className="flex flex-col md:flex-row md:justify-between md:items-center py-2 border-b border-slate-200 last:border-0 last:pb-0 gap-2">
+                                                                                    {/* COLUMN 1: List Name */}
+                                                                                    <div className="flex-1">
+                                                                                        <span className="font-semibold text-slate-700 block">{entry.listId}</span>
                                                                                     </div>
-                                                                                )}
-                                                                            </div>
-                                                                        ))}
+
+                                                                                    {/* COLUMN 2: Limit / Entry # */}
+                                                                                    <div className="flex-1">
+                                                                                        {smartDetails.type === 'entry' || smartDetails.type === 'smart' ? (
+                                                                                            <span className="bg-red-50 text-red-700 border border-red-200 px-2 py-1 rounded text-xs font-bold">
+                                                                                                Restriction Entry {smartDetails.entry}
+                                                                                            </span>
+                                                                                        ) : (
+                                                                                            entry.limit && !entry.limit.includes("No specific limit") ? 
+                                                                                            <span className="bg-white border px-2 py-1 rounded text-xs font-medium text-slate-600">{entry.limit}</span> :
+                                                                                            <span className="text-xs text-slate-400 italic">No specific limit</span>
+                                                                                        )}
+                                                                                    </div>
+
+                                                                                    {/* COLUMN 3: Smart Details (Replaces Note) */}
+                                                                                    <div className="flex-1 text-xs">
+                                                                                        {smartDetails.type === 'smart' ? (
+                                                                                            <span className="font-medium text-slate-800">{smartDetails.text}</span>
+                                                                                        ) : smartDetails.type === 'warning' ? (
+                                                                                            <span className="font-medium text-orange-600">{smartDetails.text}</span>
+                                                                                        ) : (
+                                                                                            <span className="text-slate-400 italic">See official text</span>
+                                                                                        )}
+                                                                                    </div>
+                                                                                </div>
+                                                                            );
+                                                                        })}
                                                                     </div>
                                                                 )}
                                                             </div>
