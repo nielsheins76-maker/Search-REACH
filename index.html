@@ -40,7 +40,7 @@
         } from 'https://esm.sh/lucide-react@0.263.1';
 
         // --- CONSTANTS ---
-        const INTERNAL_VERSION = "8.4 - PIC Fix & Smart Linking"; 
+        const INTERNAL_VERSION = "8.5 - PIC Fix & ECHA Link Repair"; 
         const SIX_MONTHS_MS = 15778800000; 
 
         // --- SMART RESTRICTION SUMMARIES ---
@@ -761,11 +761,18 @@
                                                                             {item.action}
                                                                         </span>
                                                                         {item.found && (
-                                                                             <a href={`https://echa.europa.eu/advanced-search-for-chemicals?p_p_id=disselinventories_WAR_disselinventoriesportlet&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view&_disselinventories_WAR_disselinventoriesportlet_param_cas=${item.entries[0]?.cas || ''}`} 
+                                                                            <a 
+                                                                                href={
+                                                                                    item.ec 
+                                                                                    ? `https://echa.europa.eu/substance-information/-/substanceinfo/${item.ec.replace(/-/g, '')}`
+                                                                                    : `https://echa.europa.eu/search-for-chemicals?p_p_id=disssimplesearch_WAR_disssimplesearchportlet&p_p_lifecycle=0&p_p_state=normal&p_p_mode=view&_disssimplesearch_WAR_disssimplesearchportlet_keyword=${item.cas || item.query}`
+                                                                                }
                                                                                 target="_blank" 
-                                                                                className="flex items-center justify-end gap-1 text-[10px] text-indigo-600 hover:underline mt-1 no-print">
+                                                                                rel="noopener noreferrer"
+                                                                                className="flex items-center justify-end gap-1 text-[10px] text-indigo-600 hover:underline mt-1 no-print"
+                                                                            >
                                                                                 View ECHA <ExternalLink size={10}/>
-                                                                             </a>
+                                                                            </a>
                                                                         )}
                                                                     </div>
                                                                 </div>
